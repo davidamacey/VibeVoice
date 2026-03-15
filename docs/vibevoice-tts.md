@@ -86,7 +86,157 @@ https://github.com/user-attachments/assets/a357c4b6-9768-495c-a576-1618f6275727
 For more examples, see the [Project Page](https://microsoft.github.io/VibeVoice).
 
 ## Installation and Usage
-Disabled due to widespread misuse.
+
+> The TTS inference code was removed from the upstream Microsoft repository. This fork ([davidamacey/VibeVoice](https://github.com/davidamacey/VibeVoice)) restores it. See [vibevoice-1.5b-inference.md](vibevoice-1.5b-inference.md) for the complete API reference.
+
+### Install
+
+```bash
+git clone https://github.com/davidamacey/VibeVoice
+cd VibeVoice
+pip install -e .
+```
+
+Download the model weights from HuggingFace:
+
+```bash
+huggingface-cli download microsoft/VibeVoice-1.5B --local-dir ./models/VibeVoice-1.5B
+```
+
+### Text Format
+
+The processor expects text formatted as speaker-labelled lines. Speaker IDs start at 0.
+
+```
+Speaker 0: Hello, welcome to the show.
+Speaker 1: Thanks for having me.
+Speaker 0: Let's get started.
+```
+
+Single-speaker input uses `Speaker 0:` only:
+
+```
+Speaker 0: This is a single speaker narration example.
+```
+
+### CLI Demo
+
+```bash
+# Basic TTS
+python demo/tts_1p5b_inference.py \
+    --model ./models/VibeVoice-1.5B \
+    --text "Speaker 0: Hello, this is VibeVoice." \
+    --output output.wav
+
+# Voice cloning — pass a reference audio to match the speaker style
+python demo/tts_1p5b_inference.py \
+    --model ./models/VibeVoice-1.5B \
+    --text "Speaker 0: Hello, this is VibeVoice." \
+    --voice reference.wav \
+    --output cloned.wav
+
+# Low-VRAM: keep only 12 transformer layers on GPU
+python demo/tts_1p5b_inference.py \
+    --model ./models/VibeVoice-1.5B \
+    --text "Speaker 0: Hello world." \
+    --output output.wav \
+    --offload --gpu-layers 12
+```
+
+### Python API
+
+```python
+import torch
+import torchaudio
+from vibevoice import VibeVoiceForConditionalGenerationInference
+from vibevoice.processor import VibeVoiceProcessor
+
+model_path = "./models/VibeVoice-1.5B"
+
+processor = VibeVoiceProcessor.from_pretrained(model_path)
+model = VibeVoiceForConditionalGenerationInference.from_pretrained_hf(
+    model_path,
+    device="cuda",
+    torch_dtype=torch.bfloat16,
+)
+model.eval()
+model.set_ddpm_inference_steps(20)
+
+# Basic TTS
+inputs = processor(
+    text="Speaker 0: Hello, this is VibeVoice text to speech.",
+    return_tensors="pt",
+).to("cuda")
+
+with torch.no_grad():
+    output = model.generate(**inputs, tokenizer=processor.tokenizer, cfg_scale=3.0)
+
+audio = output.speech_outputs[0].cpu()
+torchaudio.save("output.wav", audio.unsqueeze(0), 24000)
+```
+
+### Voice Cloning
+
+Voice cloning is zero-shot — pass a reference audio and the model matches that speaker's voice without any training:
+
+```python
+import numpy as np
+import torchaudio
+
+# Load reference audio (resampled to 24 kHz mono)
+waveform, sr = torchaudio.load("reference.wav")
+if sr != 24000:
+    waveform = torchaudio.functional.resample(waveform, sr, 24000)
+if waveform.shape[0] > 1:
+    waveform = waveform.mean(0, keepdim=True)
+voice_samples = [waveform.squeeze(0).numpy()]
+
+inputs = processor(
+    text="Speaker 0: This will sound like the reference speaker.",
+    voice_samples=voice_samples,
+    return_tensors="pt",
+).to("cuda")
+
+with torch.no_grad():
+    output = model.generate(**inputs, tokenizer=processor.tokenizer, cfg_scale=3.0)
+
+audio = output.speech_outputs[0].cpu()
+torchaudio.save("cloned.wav", audio.unsqueeze(0), 24000)
+```
+
+### Web UI
+
+The included web server exposes TTS via HTTP. Set `MODEL_PATH_1P5B` to enable the 1.5B endpoints:
+
+```bash
+MODEL_PATH_1P5B=./models/VibeVoice-1.5B python demo/web/app.py
+```
+
+**Endpoints:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/models` | List loaded models and their status |
+| `POST` | `/generate` | Generate speech — accepts `text` (form), optional `voice` (file upload), `cfg_scale`, `steps` |
+| `GET` | `/config` | Server configuration including loaded models |
+
+```bash
+# Basic generation
+curl -X POST http://localhost:7860/generate \
+  -F "text=Speaker 0: Hello from the API." \
+  -F "cfg_scale=3.0" \
+  --output output.wav
+
+# Voice cloning
+curl -X POST http://localhost:7860/generate \
+  -F "text=Speaker 0: Hello from the API." \
+  -F "voice=@reference.wav" \
+  --output cloned.wav
+```
+
+### LoRA Fine-tuning
+
+To adapt the model's speech style to a specific domain or voice dataset, see [finetuning-tts/README.md](../finetuning-tts/README.md).
 
 ## Results
 

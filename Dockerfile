@@ -13,6 +13,7 @@ ENV PATH="/opt/build-venv/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128 && \
+    pip install --no-cache-dir psutil && \
     pip install --no-cache-dir flash-attn --no-build-isolation
 
 # Save the built wheel for copying

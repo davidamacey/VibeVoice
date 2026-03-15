@@ -1,3 +1,5 @@
+> **Community Fork** — This is [davidamacey/VibeVoice](https://github.com/davidamacey/VibeVoice), a fork of [microsoft/VibeVoice](https://github.com/microsoft/VibeVoice) that restores the TTS-1.5B inference code, adds voice cloning, a LoRA fine-tuning pipeline, an extended web UI, and a full test suite. All original model weights remain on the [Microsoft HuggingFace collection](https://huggingface.co/collections/microsoft/vibevoice-68a2ef24a875c44be47b034f). Attribution and credit for the original research belongs entirely to Microsoft Research.
+
 <div align="center">
 
 ## 🎙️ VibeVoice: Open-Source Frontier Voice AI
@@ -22,6 +24,8 @@
 
 <h3>📰 News</h3>
 
+<strong>2026-03-15 (this fork): The TTS-1.5B inference code removed by Microsoft has been restored and extended. This fork adds <a href="docs/vibevoice-1.5b-inference.md">zero-shot voice cloning</a>, a LoRA fine-tuning pipeline (<a href="finetuning-tts/README.md">finetuning-tts/</a>), an extended web UI with a <code>/generate</code> endpoint, CPU layer offloading for low-VRAM GPUs, and a full pytest test suite. See the <a href="docs/vibevoice-tts.md">TTS documentation</a> to get started.</strong>
+
 <strong>2026-03-06: 🚀 VibeVoice ASR is now part of a <a href="https://github.com/huggingface/transformers/releases/tag/v5.3.0">Transformers release</a>! You can now use our speech recognition model directly through the Hugging Face Transformers library for seamless integration into your projects.</strong>
 
 <strong>2026-01-21: 📣 We open-sourced <a href="docs/vibevoice-asr.md"><strong>VibeVoice-ASR</strong></a>, a unified speech-to-text model designed to handle 60-minute long-form audio in a single pass, generating structured transcriptions containing Who (Speaker), When (Timestamps), and What (Content), with support for User-Customized Context. Try it in [Playground](https://aka.ms/vibevoice-asr)</strong>.
@@ -35,7 +39,7 @@
 2025-12-03: 📣 We open-sourced <a href="docs/vibevoice-realtime-0.5b.md"><strong>VibeVoice‑Realtime‑0.5B</strong></a>, a real‑time text‑to‑speech model that supports streaming text input and robust long-form speech generation. Try it on [Colab](https://colab.research.google.com/github/microsoft/VibeVoice/blob/main/demo/vibevoice_realtime_colab.ipynb).
 
 
-2025-09-05: VibeVoice is an open-source research framework intended to advance collaboration in the speech synthesis community. After release, we discovered instances where the tool was used in ways inconsistent with the stated intent. Since responsible use of AI is one of Microsoft’s guiding principles, we have removed the VibeVoice-TTS code from this repository.
+2025-09-05 (upstream): The original Microsoft repository removed the VibeVoice-TTS inference code citing misuse concerns. The model weights remain publicly available on Hugging Face. This fork restores the inference code for research and development use — please use responsibly.
 
 
 2025-08-25: 📣 We open-sourced <a href="docs/vibevoice-tts.md"><strong>VibeVoice-TTS</strong></a>, a long-form multi-speaker text-to-speech model that can synthesize speech up to 90 minutes long with up to 4 distinct speakers.
@@ -56,7 +60,7 @@ For more information, demos, and examples, please visit our [Project Page](https
 | Model |   Weight | Quick Try |
 |-------|--------------|---------|
 | VibeVoice-ASR-7B | [HF Link](https://huggingface.co/microsoft/VibeVoice-ASR) |  [Playground](https://aka.ms/vibevoice-asr) |
-| VibeVoice-TTS-1.5B | [HF Link](https://huggingface.co/microsoft/VibeVoice-1.5B) | Disabled |
+| VibeVoice-TTS-1.5B | [HF Link](https://huggingface.co/microsoft/VibeVoice-1.5B) | [Inference Guide](docs/vibevoice-1.5b-inference.md) |
 | VibeVoice-Realtime-0.5B | [HF Link](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B) | [Colab](https://colab.research.google.com/github/microsoft/VibeVoice/blob/main/demo/vibevoice_realtime_colab.ipynb) |
 
 </div>
@@ -111,7 +115,7 @@ https://github.com/user-attachments/assets/acde5602-dc17-4314-9e3b-c630bc84aefa
   Supports English, Chinese and other languages.
 
 
-[📖 Documentation](docs/vibevoice-tts.md) | [🤗 Hugging Face](https://huggingface.co/microsoft/VibeVoice-1.5B)  |  [📊 Paper](https://arxiv.org/pdf/2508.19205)
+[📖 Documentation](docs/vibevoice-tts.md) | [🔧 Inference API](docs/vibevoice-1.5b-inference.md) | [🤗 Hugging Face](https://huggingface.co/microsoft/VibeVoice-1.5B) | [🛠️ LoRA Fine-tuning](finetuning-tts/README.md) | [📊 Paper](https://arxiv.org/pdf/2508.19205)
 
 
 <div align="center">
@@ -181,6 +185,50 @@ https://github.com/user-attachments/assets/0901d274-f6ae-46ef-a0fd-3c4fba4f76dc
 </div>
 
 <br>
+
+## What This Fork Adds
+
+This fork ([davidamacey/VibeVoice](https://github.com/davidamacey/VibeVoice)) restores and extends the TTS-1.5B functionality that was removed from the upstream Microsoft repo. The original ASR and Realtime-0.5B code is unchanged.
+
+| Addition | Description |
+|----------|-------------|
+| `vibevoice/modular/modeling_vibevoice_inference.py` | `VibeVoiceForConditionalGenerationInference` — HuggingFace-compatible inference class with CFG diffusion, voice cloning, float8 quantization, and CPU layer offloading |
+| `vibevoice/modular/custom_offloading_utils.py` | `OffloadConfig` + `LayerOffloader` — async CPU↔GPU layer offloading for low-VRAM inference |
+| `vibevoice/utils/` | Shared utilities: memory-efficient safetensors reader, multi-shard loader, LoRA weight merge, seeded DDPM noise, float8 AutoCast wrappers, logger |
+| `vibevoice/lora/` | `LoRANetwork` + `LoRAModule` — LoRA targeting Qwen2.5 attention/MLP and diffusion head layers |
+| `vibevoice/generation/` | `GenerationVisitor` ABC — step-level callback hooks for progress, timing, and audio file events |
+| `vibevoice/modular/word_timing.py` | Word-level timestamp extraction from token windows |
+| `demo/tts_1p5b_inference.py` | CLI demo for zero-shot TTS and voice cloning |
+| `demo/web/app.py` | Extended web server: `POST /generate` (voice upload + TTS), `GET /models` |
+| `finetuning-tts/` | TTS LoRA training script + dataset format docs |
+| `tests/` | 55 pytest tests including end-to-end generation against the 1.5B model |
+| `docs/vibevoice-1.5b-inference.md` | Full Python API reference for the inference class |
+
+### Quick Start (TTS)
+
+```bash
+git clone https://github.com/davidamacey/VibeVoice
+cd VibeVoice
+pip install -e .
+
+# Download weights from HuggingFace
+huggingface-cli download microsoft/VibeVoice-1.5B --local-dir ./models/VibeVoice-1.5B
+
+# Basic TTS
+python demo/tts_1p5b_inference.py \
+    --model ./models/VibeVoice-1.5B \
+    --text "Speaker 0: Hello, this is a test." \
+    --output hello.wav
+
+# Voice cloning
+python demo/tts_1p5b_inference.py \
+    --model ./models/VibeVoice-1.5B \
+    --text "Speaker 0: Hello, this is a test." \
+    --voice reference.wav \
+    --output cloned.wav
+```
+
+See [docs/vibevoice-1.5b-inference.md](docs/vibevoice-1.5b-inference.md) for the full Python API.
 
 ## Contributing
 
