@@ -176,3 +176,12 @@ tags
 exp
 .gradio/
 experimental_voices
+# Local reference repos and test outputs (not for public fork)
+ref_repos/
+test_outputs/
+
+# Local model cache
+models/
+*.safetensors
+*.pt
+*.bin
