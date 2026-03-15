@@ -15,6 +15,10 @@ NAS_MODEL_PATH = "/mnt/nas/models/vibevoice/VibeVoice-1.5B"
 NAS_AVAILABLE = os.path.isdir(NAS_MODEL_PATH)
 nas_only = pytest.mark.skipif(not NAS_AVAILABLE, reason="NAS model not mounted")
 
+# Always use GPU 0 for integration tests when available; fall back to CPU
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+DTYPE = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
 
 # ---------------------------------------------------------------------------
 # TestVibeVoiceGenerationOutput
@@ -259,8 +263,8 @@ class TestInferenceIntegration:
         processor = VibeVoiceProcessor.from_pretrained(NAS_MODEL_PATH)
         model = VibeVoiceForConditionalGenerationInference.from_pretrained_hf(
             NAS_MODEL_PATH,
-            device="cpu",
-            torch_dtype=torch.float32,
+            device=DEVICE,
+            torch_dtype=DTYPE,
         )
         model.eval()
         return model, processor
