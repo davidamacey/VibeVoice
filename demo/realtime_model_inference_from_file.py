@@ -121,7 +121,12 @@ def parse_args():
         default=1.5,
         help="CFG (Classifier-Free Guidance) scale for generation (default: 1.5)",
     )
-    
+    parser.add_argument(
+        "--timestamps",
+        action="store_true",
+        help="Generate word-level timestamps and save alongside audio output",
+    )
+
     return parser.parse_args()
 
 def main():
@@ -250,6 +255,7 @@ def main():
         generation_config={'do_sample': False},
         verbose=True,
         all_prefilled_outputs=copy.deepcopy(all_prefilled_outputs) if all_prefilled_outputs is not None else None,
+        return_word_timestamps=args.timestamps,
     )
     generation_time = time.time() - start_time
     print(f"Generation time: {generation_time:.2f} seconds")
@@ -286,7 +292,35 @@ def main():
         output_path=output_path,
     )
     print(f"Saved output to {output_path}")
-    
+
+    # Save word timestamps if requested
+    if args.timestamps and outputs.word_timestamps and outputs.word_timestamps[0]:
+        import json
+        from vibevoice.modular.word_timing import timestamps_to_json, timestamps_to_srt
+
+        word_ts = outputs.word_timestamps[0]
+        ts_json = timestamps_to_json(word_ts)
+
+        # Print timing table
+        print(f"\nWord Timestamps ({len(word_ts)} words):")
+        print(f"{'Word':<20} {'Start':>8} {'End':>8} {'Duration':>8}")
+        print("-" * 48)
+        for wt in word_ts:
+            dur = wt.end_time - wt.start_time
+            print(f"{wt.word:<20} {wt.start_time:>8.3f} {wt.end_time:>8.3f} {dur:>8.3f}")
+
+        # Save JSON
+        json_path = os.path.join(args.output_dir, f"{txt_filename}_timestamps.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(ts_json, f, indent=2, ensure_ascii=False)
+        print(f"Saved timestamps to {json_path}")
+
+        # Save SRT
+        srt_path = os.path.join(args.output_dir, f"{txt_filename}_timestamps.srt")
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(timestamps_to_srt(word_ts))
+        print(f"Saved subtitles to {srt_path}")
+
     # Print summary
     print("\n" + "="*50)
     print("GENERATION SUMMARY")

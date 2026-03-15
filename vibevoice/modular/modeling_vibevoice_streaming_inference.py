@@ -157,6 +157,7 @@ class VibeVoiceGenerationOutput(ModelOutput):
     sequences: torch.LongTensor = None
     speech_outputs: Optional[List[torch.FloatTensor]] = None
     reach_max_step_sample: Optional[torch.BoolTensor] = None
+    word_timestamps: Optional[List] = None  # List[List[WordTimestamp]] per batch
 
 
 class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreTrainedModel, GenerationMixin):
@@ -589,6 +590,7 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
         return_speech: bool = True,
         cfg_scale: float = 1.0,
         stop_check_fn: Optional[Callable[[], bool]] = None,
+        return_word_timestamps: bool = False,
         **kwargs,
     ) -> Union[torch.LongTensor, VibeVoiceGenerationOutput]:
         """
@@ -666,6 +668,9 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
 
         # Initialize audio chunks storage for each sample
         audio_chunks = [[] for _ in range(batch_size)]
+        if return_word_timestamps:
+            window_token_maps = [[] for _ in range(batch_size)]
+            cumulative_audio_samples = [0] * batch_size
         tts_text_window_index = 0
         reach_max_step_sample = torch.zeros(batch_size, dtype=torch.bool, device=device)
         first_text_window_size = TTS_TEXT_WINDOW_SIZE if tts_text_ids.shape[1] >= TTS_TEXT_WINDOW_SIZE else tts_text_ids.shape[1]
@@ -728,6 +733,9 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
             tts_text_window_index += 1
 
             if cur_input_tts_text_ids.shape[1] > 0:
+                if return_word_timestamps:
+                    _wt_text_ids = cur_input_tts_text_ids[0].tolist()
+                    _wt_start = cumulative_audio_samples[0]
                 input_ids = torch.cat([input_ids, cur_input_tts_text_ids], dim=-1)
                 tts_lm_input_ids = torch.cat([tts_lm_input_ids, cur_input_tts_text_ids], dim=-1)
 
@@ -794,6 +802,8 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
                     # Only append audio chunk if the sample is not finished
                     if not finished_tags[idx]:
                         audio_chunks[idx].append(audio_chunk[i])
+                        if return_word_timestamps:
+                            cumulative_audio_samples[idx] += audio_chunk[i].shape[-1]
 
                  # Add streaming support here
                 if audio_streamer is not None:
@@ -851,6 +861,15 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
                     if audio_streamer is not None:
                         audio_streamer.end(diffusion_indices)
 
+            if return_word_timestamps and cur_input_tts_text_ids.shape[1] > 0:
+                for idx in range(batch_size):
+                    if cumulative_audio_samples[idx] > _wt_start:
+                        window_token_maps[idx].append({
+                            "token_ids": _wt_text_ids,
+                            "start_sample": _wt_start,
+                            "end_sample": cumulative_audio_samples[idx],
+                        })
+
             if tts_lm_input_ids.shape[1] > tts_lm_generation_config.max_length:
                 if verbose:
                     print(f"Reached maximum generation length {tts_lm_generation_config.max_length}, stopped it.")
@@ -876,10 +895,19 @@ class VibeVoiceStreamingForConditionalGenerationInference(VibeVoiceStreamingPreT
         if reach_max_step_sample is not None and reach_max_step_sample.any():
             print(f"Reached maximum generation length {tts_lm_generation_config.max_length}, stopped it.")
 
+        word_ts = None
+        if return_word_timestamps:
+            from .word_timing import build_word_timestamps
+            word_ts = [
+                build_word_timestamps(wm, tokenizer)
+                for wm in window_token_maps
+            ]
+
         return VibeVoiceGenerationOutput(
             sequences=tts_lm_input_ids,
             speech_outputs=final_audio_outputs if return_speech else None,
             reach_max_step_sample=reach_max_step_sample,
+            word_timestamps=word_ts,
         )
 
     @torch.no_grad()

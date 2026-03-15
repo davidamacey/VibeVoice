@@ -54,6 +54,7 @@ class VibeVoiceGenerationOutput(ModelOutput):
     """
     sequences: torch.LongTensor = None
     speech_outputs: Optional[List[torch.FloatTensor]] = None
+    word_timestamps: Optional[List] = None  # List[List[WordTimestamp]] per batch
 
 
 class SpeechConnector(nn.Module):

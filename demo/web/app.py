@@ -1,18 +1,20 @@
 import datetime
 import builtins
 import asyncio
+import io
 import json
 import os
 import threading
 import traceback
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, cast
 
 import numpy as np
 import torch
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import FileResponse
+import torchaudio
+from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -25,6 +27,8 @@ from vibevoice.processor.vibevoice_streaming_processor import (
 from vibevoice.modular.streamer import AudioStreamer
 
 import copy
+
+SAMPLE_RATE_1P5B = 24_000
 
 BASE = Path(__file__).parent
 SAMPLE_RATE = 24_000
@@ -208,9 +212,10 @@ class StreamingTTSService:
         refresh_negative: bool,
         prefilled_outputs,
         stop_event: threading.Event,
+        results: Optional[list] = None,
     ) -> None:
         try:
-            self.model.generate(
+            outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=None,
                 cfg_scale=cfg_scale,
@@ -225,7 +230,10 @@ class StreamingTTSService:
                 verbose=False,
                 refresh_negative=refresh_negative,
                 all_prefilled_outputs=copy.deepcopy(prefilled_outputs),
+                return_word_timestamps=True,
             )
+            if results is not None:
+                results.append(outputs)
         except Exception as exc:  # pragma: no cover - diagnostic logging
             errors.append(exc)
             traceback.print_exc()
@@ -271,6 +279,7 @@ class StreamingTTSService:
         inputs = self._prepare_inputs(text, prefilled_outputs)
         audio_streamer = AudioStreamer(batch_size=1, stop_signal=None, timeout=None)
         errors: list = []
+        gen_results: list = []
         stop_signal = stop_event or threading.Event()
 
         thread = threading.Thread(
@@ -286,6 +295,7 @@ class StreamingTTSService:
                 "refresh_negative": refresh_negative,
                 "prefilled_outputs": prefilled_outputs,
                 "stop_event": stop_signal,
+                "results": gen_results,
             },
             daemon=True,
         )
@@ -325,11 +335,108 @@ class StreamingTTSService:
             if errors:
                 emit("generation_error", message=str(errors[0]))
                 raise errors[0]
+            # Emit word timing after generation completes
+            if gen_results and gen_results[0].word_timestamps:
+                from vibevoice.modular.word_timing import timestamps_to_json
+                word_ts = gen_results[0].word_timestamps[0]
+                if word_ts:
+                    emit("word_timing", words=timestamps_to_json(word_ts))
 
     def chunk_to_pcm16(self, chunk: np.ndarray) -> bytes:
         chunk = np.clip(chunk, -1.0, 1.0)
         pcm = (chunk * 32767.0).astype(np.int16)
         return pcm.tobytes()
+
+
+# ---------------------------------------------------------------------------
+# 1.5B TTS service (non-streaming, REST-based)
+# ---------------------------------------------------------------------------
+
+class TTSService1p5B:
+    """Wraps VibeVoiceForConditionalGenerationInference for REST-based TTS."""
+
+    def __init__(self, model_path: str, device: str = "cuda", inference_steps: int = 20):
+        self.model_path = model_path
+        self.device = device
+        self.inference_steps = inference_steps
+        self.model = None
+        self.processor = None
+        self._lock = threading.Lock()
+
+    def load(self) -> None:
+        from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
+        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+
+        print(f"[1.5B startup] Loading processor from {self.model_path}")
+        self.processor = VibeVoiceProcessor.from_pretrained(self.model_path)
+
+        load_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        print(f"[1.5B startup] Loading model with dtype={load_dtype}, device={self.device}")
+        try:
+            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                self.model_path,
+                torch_dtype=load_dtype,
+                device_map=self.device,
+                attn_implementation="flash_attention_2",
+            )
+        except Exception:
+            self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                self.model_path,
+                torch_dtype=load_dtype,
+                device_map=self.device,
+                attn_implementation="sdpa",
+            )
+        self.model.eval()
+        self.model.set_ddpm_inference_steps(self.inference_steps)
+        print("[1.5B startup] Model ready.")
+
+    def generate(
+        self,
+        text: str,
+        voice_audio: Optional[np.ndarray] = None,
+        cfg_scale: float = 3.0,
+        steps: Optional[int] = None,
+    ) -> np.ndarray:
+        """Synthesize speech. Returns float32 numpy array at 24 kHz."""
+        if steps is not None:
+            self.model.set_ddpm_inference_steps(steps)
+
+        voice_samples = None
+        if voice_audio is not None:
+            voice_samples = [voice_audio]
+
+        with self._lock:
+            inputs = self.processor(
+                text=text.strip(),
+                voice_samples=voice_samples,
+                return_tensors="pt",
+            )
+            inputs = {
+                k: v.to(self.device) if hasattr(v, "to") else v
+                for k, v in inputs.items()
+            }
+            with torch.no_grad():
+                output = self.model.generate(
+                    **inputs,
+                    tokenizer=self.processor.tokenizer,
+                    cfg_scale=cfg_scale,
+                    return_speech=True,
+                    show_progress_bar=False,
+                )
+
+        if output.speech_outputs and output.speech_outputs[0] is not None:
+            audio = output.speech_outputs[0].cpu().float().numpy()
+            return audio
+        return np.zeros(0, dtype=np.float32)
+
+    @staticmethod
+    def audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = SAMPLE_RATE_1P5B) -> bytes:
+        audio = np.clip(audio, -1.0, 1.0)
+        tensor = torch.from_numpy(audio).unsqueeze(0)
+        buf = io.BytesIO()
+        torchaudio.save(buf, tensor, sample_rate, format="wav")
+        buf.seek(0)
+        return buf.read()
 
 
 app = FastAPI()
@@ -342,18 +449,32 @@ async def _startup() -> None:
         raise RuntimeError("MODEL_PATH not set in environment")
 
     device = os.environ.get("MODEL_DEVICE", "cuda")
-    
+
     service = StreamingTTSService(
         model_path=model_path,
-        device=device
+        device=device,
     )
     service.load()
-
     app.state.tts_service = service
     app.state.model_path = model_path
     app.state.device = device
     app.state.websocket_lock = asyncio.Lock()
-    print("[startup] Model ready.")
+
+    # Optionally load 1.5B model if MODEL_PATH_1P5B is set
+    model_path_1p5b = os.environ.get("MODEL_PATH_1P5B")
+    app.state.tts_service_1p5b = None
+    if model_path_1p5b:
+        steps_1p5b = int(os.environ.get("MODEL_1P5B_STEPS", "20"))
+        service_1p5b = TTSService1p5B(
+            model_path=model_path_1p5b,
+            device=device,
+            inference_steps=steps_1p5b,
+        )
+        service_1p5b.load()
+        app.state.tts_service_1p5b = service_1p5b
+        print(f"[startup] 1.5B model ready at {model_path_1p5b}")
+
+    print("[startup] All models ready.")
 
 
 def streaming_tts(text: str, **kwargs) -> Iterator[np.ndarray]:
@@ -511,5 +632,77 @@ def get_config():
     return {
         "voices": voices,
         "default_voice": service.default_voice_key,
+        "models": get_models()["models"],
     }
+
+
+@app.get("/models")
+def get_models():
+    """List available loaded models."""
+    models = [{"id": "0.5b-streaming", "name": "VibeVoice Realtime 0.5B (streaming)", "streaming": True}]
+    if app.state.tts_service_1p5b is not None:
+        models.append({"id": "1.5b", "name": "VibeVoice TTS 1.5B (voice cloning)", "streaming": False})
+    return {"models": models}
+
+
+@app.post("/generate")
+async def generate_1p5b(
+    text: str = Form(...),
+    cfg_scale: float = Form(3.0),
+    steps: Optional[int] = Form(None),
+    voice: Optional[UploadFile] = File(None),
+):
+    """Generate speech with the 1.5B model (non-streaming, supports voice cloning).
+
+    Returns a WAV file as binary response.
+
+    Form fields:
+        text: Text to synthesize.
+        cfg_scale: CFG guidance scale (default 3.0).
+        steps: DDPM inference steps override (default: model default).
+        voice: Optional WAV/MP3 reference audio file for voice cloning.
+    """
+    service_1p5b: Optional[TTSService1p5B] = app.state.tts_service_1p5b
+    if service_1p5b is None:
+        raise HTTPException(
+            status_code=503,
+            detail="1.5B model not loaded. Set MODEL_PATH_1P5B environment variable to enable.",
+        )
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    # Load voice reference audio if provided
+    voice_audio = None
+    if voice is not None:
+        try:
+            audio_bytes = await voice.read()
+            buf = io.BytesIO(audio_bytes)
+            waveform, sr = torchaudio.load(buf)
+            if sr != SAMPLE_RATE_1P5B:
+                waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE_1P5B)
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(0, keepdim=True)
+            voice_audio = waveform.squeeze(0).numpy()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not decode voice file: {e}")
+
+    try:
+        audio = await asyncio.to_thread(
+            service_1p5b.generate,
+            text=text,
+            voice_audio=voice_audio,
+            cfg_scale=cfg_scale,
+            steps=steps,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    wav_bytes = TTSService1p5B.audio_to_wav_bytes(audio)
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={"Content-Disposition": 'attachment; filename="output.wav"'},
+    )
 
