@@ -19,7 +19,21 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 # Save the built wheel for copying
 RUN pip wheel flash-attn --no-build-isolation --no-deps -w /tmp/wheels
 
-# Stage 2: Runtime on Trixie
+# Stage 2: Build Svelte frontend (cached on package.json + lock)
+FROM node:22-slim AS frontend-builder
+
+WORKDIR /frontend
+
+# ── Dependency layer (only rebuilds when package.json/lock change) ───────────
+COPY demo/web/frontend/package.json demo/web/frontend/package-lock.json ./
+RUN npm ci
+
+# ── Build layer (rebuilds on source changes) ─────────────────────────────────
+COPY demo/web/frontend/ ./
+RUN npm run build
+
+
+# Stage 3: Runtime on Trixie
 FROM python:3.12-slim-trixie
 
 ENV PYTHONUNBUFFERED=1
@@ -48,13 +62,16 @@ COPY pyproject.toml .
 RUN mkdir -p vibevoice vllm_plugin && \
     touch vibevoice/__init__.py vllm_plugin/__init__.py
 RUN pip install --no-cache-dir torchaudio --index-url https://download.pytorch.org/whl/cu128 && \
-    pip install --no-cache-dir -e ".[streamingtts]" pytest "speechbrain>=1.0.0"
+    pip install --no-cache-dir -e ".[streamingtts,similarity]" pytest "speechbrain>=1.0.0" torchcodec
 
 # ── Source layer (rebuilds on source changes, but pip install is already cached) ─
 COPY vibevoice/ vibevoice/
 COPY vllm_plugin/ vllm_plugin/
 COPY demo/ demo/
 COPY tests/ tests/
+
+# ── Frontend build output (from Stage 2) ─────────────────────────────────────
+COPY --from=frontend-builder /frontend/build/ demo/web/frontend/build/
 
 # NVIDIA container runtime mounts GPU drivers at runtime
 ENV NVIDIA_VISIBLE_DEVICES=all

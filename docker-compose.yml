@@ -11,11 +11,14 @@ services:
       - MODEL_PATH_ASR=/models/vibevoice/VibeVoice-ASR
       - TOKENIZER_PATH=/models/Qwen/Qwen2.5-7B
       - ECAPA_MODEL_DIR=/models/speechbrain/spkrec-ecapa-voxceleb
+      - WESPEAKER_MODEL_PATH=/models/wespeaker/en/model.onnx
       - MODEL_DEVICE=cuda
     volumes:
       - /mnt/nas/models:/models
       - ./outputs:/app/outputs
-      - ./demo:/app/demo
+      # Hot-reload Python source only; frontend build is baked into the image.
+      # Frontend changes require `docker compose build`.
+      - ./demo/web/app.py:/app/demo/web/app.py
       - ./vibevoice:/app/vibevoice
       - ./tests:/app/tests
     ports:

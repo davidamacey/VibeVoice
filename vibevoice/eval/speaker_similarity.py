@@ -1,30 +1,36 @@
 """
 Speaker Similarity Engine for voice cloning quality evaluation.
 
-Two complementary metrics:
+Three complementary metrics:
 
-  1. ECAPA-TDNN (speechbrain/spkrec-ecapa-voxceleb)
+  1. WeSpeaker (ONNX, via wespeakerruntime)
+     256-dim ResNet34-LM speaker embeddings trained on VoxCeleb.
+     ~25 MB ONNX model, CPU-friendly, no GPU required.
+
+  2. ECAPA-TDNN (speechbrain/spkrec-ecapa-voxceleb)
      192-dim speaker embeddings from a model trained for speaker verification.
      Operates at 16 kHz. Downloads ~80 MB on first use.
 
-  2. Librosa multi-feature vector
+  3. Librosa multi-feature vector
      MFCC + delta + spectral contrast + F0 statistics combined into a
      single cosine similarity. No model download required; always available.
 
-  3. Ensemble score  = 0.7 * ECAPA + 0.3 * librosa  (or librosa-only if
-     ECAPA is unavailable).
+  Ensemble score = 0.7 * primary_model + 0.3 * librosa (or librosa-only
+  if no neural model is available). Primary model prefers wespeaker > ECAPA.
 
 Usage::
 
     from vibevoice.eval import SpeakerSimilarity
 
-    sim = SpeakerSimilarity(device="cuda:0")
+    sim = SpeakerSimilarity(backend="wespeaker")
     scores = sim.compute(wav_reference, wav_cloned, sr=24000)
     print(scores)
-    # {'ecapa_tdnn': 0.87, 'librosa': 0.73, 'ensemble': 0.83}
+    # {'wespeaker': 0.87, 'librosa': 0.73, 'ensemble': 0.83}
 """
 
 import logging
+import os
+import tempfile
 from typing import Dict, Optional
 
 import numpy as np
@@ -32,11 +38,12 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-import os
 _SPEECHBRAIN_MODEL_DIR = os.environ.get("ECAPA_MODEL_DIR", "/tmp/speechbrain_models")
 _ECAPA_HF_ID = "speechbrain/spkrec-ecapa-voxceleb"
 _ECAPA_SR = 16_000        # speechbrain model expects 16 kHz
 _VIBEVOICE_SR = 24_000    # VibeVoice model output sample rate
+_WESPEAKER_LANG = os.environ.get("WESPEAKER_LANG", "en")
+_WESPEAKER_MODEL_PATH = os.environ.get("WESPEAKER_MODEL_PATH", "")
 
 
 # ---------------------------------------------------------------------------
@@ -99,17 +106,43 @@ class SpeakerSimilarity:
         device: torch device string for the ECAPA-TDNN model (``"cuda:0"``,
             ``"cpu"``, etc.)
         model_dir: local directory to cache the speechbrain model weights.
+        backend: preferred neural backend — ``"wespeaker"`` (ONNX, default),
+            ``"ecapa"`` (speechbrain), or ``"auto"`` (try wespeaker then ECAPA).
     """
 
-    def __init__(self, device: str = "cpu", model_dir: str = _SPEECHBRAIN_MODEL_DIR):
+    def __init__(
+        self,
+        device: str = "cpu",
+        model_dir: str = _SPEECHBRAIN_MODEL_DIR,
+        backend: str = "wespeaker",
+    ):
         self.device = device
         self.model_dir = model_dir
         self._ecapa = None
-        self._load_ecapa()
+        self._wespeaker = None
+
+        if backend in ("wespeaker", "auto"):
+            self._load_wespeaker()
+        if backend in ("ecapa", "auto") or (backend == "wespeaker" and self._wespeaker is None):
+            self._load_ecapa()
 
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
+
+    def _load_wespeaker(self) -> None:
+        try:
+            import wespeakerruntime as wespeaker
+            if _WESPEAKER_MODEL_PATH and os.path.isfile(_WESPEAKER_MODEL_PATH):
+                self._wespeaker = wespeaker.Speaker(onnx_path=_WESPEAKER_MODEL_PATH)
+                logger.info("WeSpeaker ONNX loaded from %s.", _WESPEAKER_MODEL_PATH)
+            else:
+                self._wespeaker = wespeaker.Speaker(lang=_WESPEAKER_LANG)
+                logger.info("WeSpeaker ONNX loaded (lang=%s).", _WESPEAKER_LANG)
+        except Exception as exc:
+            logger.warning(
+                "WeSpeaker unavailable (%s). Will try ECAPA-TDNN fallback.", exc
+            )
 
     def _load_ecapa(self) -> None:
         try:
@@ -136,12 +169,32 @@ class SpeakerSimilarity:
             )
 
     @property
+    def wespeaker_available(self) -> bool:
+        return self._wespeaker is not None
+
+    @property
     def ecapa_available(self) -> bool:
         return self._ecapa is not None
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _wespeaker_embedding(self, wav: np.ndarray, sr: int) -> Optional[np.ndarray]:
+        if self._wespeaker is None:
+            return None
+        import soundfile as sf
+        wav = wav.astype(np.float32)
+        if wav.ndim > 1:
+            wav = wav.mean(axis=0)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp_path = f.name
+            sf.write(tmp_path, wav, sr)
+        try:
+            emb = self._wespeaker.extract_embedding(tmp_path)
+            return emb.squeeze()
+        finally:
+            os.unlink(tmp_path)
 
     def _resample_to_ecapa(self, wav: np.ndarray, sr: int) -> torch.Tensor:
         """Resample to 16 kHz mono and return as (1, T) tensor."""
@@ -164,6 +217,17 @@ class SpeakerSimilarity:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def wespeaker_similarity(self, wav1: np.ndarray, wav2: np.ndarray, sr: int = _VIBEVOICE_SR) -> Optional[float]:
+        """
+        Cosine similarity of WeSpeaker ONNX speaker embeddings.
+        Returns ``None`` if WeSpeaker is unavailable.
+        """
+        e1 = self._wespeaker_embedding(wav1, sr)
+        e2 = self._wespeaker_embedding(wav2, sr)
+        if e1 is None or e2 is None:
+            return None
+        return _cosine(e1, e2)
 
     def ecapa_similarity(self, wav1: np.ndarray, wav2: np.ndarray, sr: int = _VIBEVOICE_SR) -> Optional[float]:
         """
@@ -207,14 +271,23 @@ class SpeakerSimilarity:
         """
         results: Dict[str, float] = {}
 
+        # Prefer wespeaker, fall back to ECAPA
+        primary_key = None
+        ws = self.wespeaker_similarity(wav1, wav2, sr)
+        if ws is not None:
+            results["wespeaker"] = ws
+            primary_key = "wespeaker"
+
         ecapa = self.ecapa_similarity(wav1, wav2, sr)
         if ecapa is not None:
             results["ecapa_tdnn"] = ecapa
+            if primary_key is None:
+                primary_key = "ecapa_tdnn"
 
         results["librosa"] = self.librosa_similarity(wav1, wav2, sr)
 
-        if "ecapa_tdnn" in results:
-            results["ensemble"] = 0.7 * results["ecapa_tdnn"] + 0.3 * results["librosa"]
+        if primary_key is not None:
+            results["ensemble"] = 0.7 * results[primary_key] + 0.3 * results["librosa"]
         else:
             results["ensemble"] = results["librosa"]
 

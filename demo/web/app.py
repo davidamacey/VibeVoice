@@ -1,3 +1,4 @@
+import base64
 import datetime
 import builtins
 import asyncio
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 import torchaudio
 from fastapi import FastAPI, WebSocket, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
@@ -408,12 +409,14 @@ class TTSService1p5B:
         cfg_scale: float = 3.0,
         steps: Optional[int] = None,
         seed: Optional[int] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
     ) -> np.ndarray:
         """Synthesize speech. Returns float32 numpy array at 24 kHz.
 
         voice_audio: single reference for Speaker 0 (convenience wrapper).
         voice_samples: per-speaker list [spk0, spk1, ...] (takes precedence).
         seed: RNG seed for reproducible generation (None = random).
+        step_callback: Called with (current_step, total_steps) during diffusion.
         """
         if steps is not None:
             self.model.set_ddpm_inference_steps(steps)
@@ -424,6 +427,15 @@ class TTSService1p5B:
 
         if seed is not None:
             torch.manual_seed(seed)
+
+        # Build a custom tqdm class that forwards step progress
+        tqdm_kwargs: dict = {}
+        if step_callback:
+            import functools
+            tqdm_kwargs["show_progress_bar"] = True
+            tqdm_kwargs["tqdm_class"] = functools.partial(_StepProgressBar, callback=step_callback)
+        else:
+            tqdm_kwargs["show_progress_bar"] = False
 
         with self._lock:
             inputs = self.processor(
@@ -441,7 +453,7 @@ class TTSService1p5B:
                     tokenizer=self.processor.tokenizer,
                     cfg_scale=cfg_scale,
                     return_speech=True,
-                    show_progress_bar=False,
+                    **tqdm_kwargs,
                 )
 
         if output.speech_outputs and output.speech_outputs[0] is not None:
@@ -466,6 +478,55 @@ class TTSService1p5B:
 # ---------------------------------------------------------------------------
 # ASR service (non-streaming, REST-based)
 # ---------------------------------------------------------------------------
+
+class _StepProgressBar:
+    """Fake tqdm that calls a callback on each inference step.
+
+    Passed via ``tqdm_class=`` to model.generate() so the diffusion loop
+    reports step-level progress without printing to stdout.
+    """
+
+    def __init__(self, iterable=None, *, callback: Optional[Callable[[int, int], None]] = None, **_kwargs):
+        self._iterable = iterable if iterable is not None else []
+        self._callback = callback
+        self._total = len(self._iterable) if hasattr(self._iterable, '__len__') else 0
+
+    def __iter__(self):
+        for i, item in enumerate(self._iterable):
+            if self._callback:
+                self._callback(i + 1, self._total)
+            yield item
+
+    def __len__(self):
+        return self._total
+
+    # tqdm-compatible methods called by the generation loop
+    def set_description(self, desc: str, refresh: bool = True):
+        pass
+
+    def close(self):
+        pass
+
+
+class _TokenProgressStreamer:
+    """Lightweight streamer that counts generated tokens and calls a progress callback."""
+
+    def __init__(self, max_tokens: int, callback: Optional[Callable[[int, int], None]] = None):
+        self.max_tokens = max_tokens
+        self.callback = callback
+        self.count = 0
+
+    def put(self, value):
+        if isinstance(value, torch.Tensor):
+            self.count += value.numel()
+        else:
+            self.count += 1
+        if self.callback:
+            self.callback(self.count, self.max_tokens)
+
+    def end(self):
+        pass
+
 
 class ASRService:
     """Wraps VibeVoiceASRForConditionalGeneration for REST-based transcription."""
@@ -509,7 +570,14 @@ class ASRService:
         self.model.eval()
         print("[ASR startup] ASR model ready.")
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int = 24000) -> dict:
+    MAX_NEW_TOKENS = 512
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 24000,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> dict:
         """Transcribe audio array. Returns dict with text and segments."""
         ASR_SAMPLE_RATE = 24000
         if sample_rate != ASR_SAMPLE_RATE:
@@ -532,11 +600,13 @@ class ASRService:
                     v = v.to(device=self.device, dtype=load_dtype) if v.is_floating_point() else v.to(self.device)
                 casted[k] = v
             inputs = casted
+            streamer = _TokenProgressStreamer(self.MAX_NEW_TOKENS, progress_callback)
             gen_cfg = {
-                "max_new_tokens": 512,
+                "max_new_tokens": self.MAX_NEW_TOKENS,
                 "pad_token_id": self.processor.pad_id,
                 "eos_token_id": self.processor.tokenizer.eos_token_id,
                 "do_sample": False,
+                "streamer": streamer,
             }
             device_type = "cuda" if self.device.startswith("cuda") else "cpu"
             with torch.no_grad(), torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=(device_type == "cuda")):
@@ -678,6 +748,19 @@ def _load_audio_bytes(audio_bytes: bytes, filename: str = "") -> tuple:
             os.unlink(tmp_out_path)
 
 
+def _count_generate_chunks(text: str, max_words: int) -> int:
+    """Pre-compute how many generation calls _generate_with_pauses will make."""
+    parts = re.split(r'\[pause:(\d+(?:\.\d+)?)(s|ms)?\]', text)
+    count = 0
+    for idx in range(0, len(parts), 3):
+        chunk_text = parts[idx].strip()
+        if chunk_text:
+            if not re.search(r'Speaker\s*\d+\s*:', chunk_text):
+                chunk_text = f"Speaker 0: {chunk_text}"
+            count += len(_split_into_word_chunks(chunk_text, max_words))
+    return max(1, count)
+
+
 def _split_into_word_chunks(text: str, max_words: int) -> List[str]:
     """Split text at sentence boundaries so no chunk exceeds max_words."""
     words = text.split()
@@ -726,6 +809,8 @@ def _generate_with_pauses(
     seed: Optional[int],
     speed: float,
     max_words: int,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    step_callback: Optional[Callable[[int, int, int, int], None]] = None,
 ) -> np.ndarray:
     """Split text on [pause:Xs]/[pause:Xms] markers, auto-chunk long segments,
     generate each piece, and stitch with silence.
@@ -747,6 +832,8 @@ def _generate_with_pauses(
     # (text, dur_str, unit) triples
     parts = re.split(r'\[pause:(\d+(?:\.\d+)?)(s|ms)?\]', text)
     audio_chunks: List[np.ndarray] = []
+    total_chunks = _count_generate_chunks(text, max_words)
+    current_chunk = 0
 
     for idx in range(0, len(parts), 3):
         chunk_text = parts[idx].strip()
@@ -758,6 +845,16 @@ def _generate_with_pauses(
             # Auto-chunk long segments at sentence boundaries
             sub_chunks = _split_into_word_chunks(chunk_text, max_words)
             for sub in sub_chunks:
+                current_chunk += 1
+                if progress_callback:
+                    progress_callback(current_chunk, total_chunks)
+
+                # Build per-chunk step callback that includes chunk context
+                _chunk_step_cb = None
+                if step_callback:
+                    _cc, _tc = current_chunk, total_chunks
+                    _chunk_step_cb = lambda s, t, cc=_cc, tc=_tc: step_callback(cc, tc, s, t)
+
                 chunk_audio = service.generate(
                     text=sub,
                     voice_audio=shifted_voice_audio,
@@ -765,6 +862,7 @@ def _generate_with_pauses(
                     cfg_scale=cfg_scale,
                     steps=steps,
                     seed=seed,
+                    step_callback=_chunk_step_cb,
                 )
                 if chunk_audio.size > 0:
                     audio_chunks.append(chunk_audio)
@@ -840,6 +938,17 @@ async def _startup() -> None:
 
     app.state.hot_swap = hot_swap
     print("[startup] Hot-swap manager ready. Heavy models load on first request.")
+
+    # Speaker similarity engine for voice cloning quality feedback
+    try:
+        from vibevoice.eval import SpeakerSimilarity
+        sim_backend = os.environ.get("SPEAKER_SIM_BACKEND", "wespeaker")
+        app.state.speaker_sim = SpeakerSimilarity(backend=sim_backend)
+        print(f"[startup] Speaker similarity engine loaded (backend={sim_backend}, "
+              f"wespeaker={'yes' if app.state.speaker_sim.wespeaker_available else 'no'})")
+    except Exception as e:
+        app.state.speaker_sim = None
+        print(f"[startup] Speaker similarity engine unavailable: {e}")
 
 
 def streaming_tts(text: str, **kwargs) -> Iterator[np.ndarray]:
@@ -1000,9 +1109,12 @@ async def websocket_stream(ws: WebSocket) -> None:
             lock.release()
 
 
+FRONTEND_BUILD = BASE / "frontend" / "build"
+
+
 @app.get("/")
 def index():
-    return FileResponse(BASE / "index.html")
+    return FileResponse(FRONTEND_BUILD / "index.html")
 
 
 @app.get("/config")
@@ -1079,18 +1191,13 @@ async def generate_1p5b(
         model_id: '1.5b' or 'large' (default '1.5b').
         voice_0..voice_3: Optional audio files for per-speaker voice cloning.
     """
-    # Select service via hot-swap manager (loads on demand, unloads previous)
+    # Validate early (before starting SSE stream)
     hot_swap: HotSwapManager = app.state.hot_swap
     if not hot_swap.is_registered(model_id):
         raise HTTPException(
             status_code=503,
             detail=f"Model '{model_id}' is not configured. Check MODEL_PATH_1P5B / MODEL_PATH_LARGE environment variables.",
         )
-    try:
-        service: TTSService1p5B = await asyncio.to_thread(hot_swap.get_or_load, model_id)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to load model '{model_id}': {e}")
 
     if not text.strip():
         raise HTTPException(status_code=400, detail="text cannot be empty")
@@ -1098,7 +1205,7 @@ async def generate_1p5b(
     speed = max(0.5, min(2.0, speed))
     max_words = max(50, min(500, max_words))
 
-    # Load per-speaker voice files
+    # Load per-speaker voice files (must happen before SSE stream starts)
     voice_uploads = [voice_0, voice_1, voice_2, voice_3]
     voice_samples: List[Optional[np.ndarray]] = []
     has_any_voice = False
@@ -1113,45 +1220,96 @@ async def generate_1p5b(
         else:
             voice_samples.append(None)
 
-    # Normalize: if no voices provided, pass None; otherwise pass the list
     resolved_voice_samples: Optional[List[Optional[np.ndarray]]] = voice_samples if has_any_voice else None
     resolved_voice_audio: Optional[np.ndarray] = voice_samples[0] if has_any_voice else None
 
-    try:
-        audio = await asyncio.to_thread(
-            _generate_with_pauses,
-            service,
-            text,
-            resolved_voice_audio,
-            resolved_voice_samples,
-            cfg_scale,
-            steps,
-            seed,
-            speed,
-            max_words,
-        )
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    # Pre-compute total chunks for progress tracking
+    total_chunks = _count_generate_chunks(text, max_words)
 
-    # If no voice reference was given, speed couldn't be applied at conditioning time —
-    # fall back to output resampling
-    if not has_any_voice:
-        audio = _apply_speed_output(audio, speed)
+    # SSE progress queue — generation thread writes events, async generator reads them
+    progress_queue: Queue = Queue()
 
-    wav_bytes = TTSService1p5B.audio_to_wav_bytes(audio)
-    return Response(
-        content=wav_bytes,
-        media_type="audio/wav",
-        headers={"Content-Disposition": 'attachment; filename="output.wav"'},
-    )
+    def _run_generation():
+        try:
+            # Phase 1: Load model (may take 10-30s on first request or model swap)
+            progress_queue.put({"type": "loading", "model_id": model_id})
+            service: TTSService1p5B = hot_swap.get_or_load(model_id)
+            progress_queue.put({"type": "loaded", "model_id": model_id})
+
+            # Phase 2: Generate with chunk-level + step-level progress
+            def on_chunk_progress(chunk: int, total: int):
+                progress_queue.put({"type": "progress", "chunk": chunk, "total_chunks": total})
+
+            def on_step_progress(chunk: int, total_chunks: int, step: int, total_steps: int):
+                progress_queue.put({
+                    "type": "step",
+                    "chunk": chunk,
+                    "total_chunks": total_chunks,
+                    "step": step,
+                    "total_steps": total_steps,
+                })
+
+            audio = _generate_with_pauses(
+                service, text,
+                resolved_voice_audio, resolved_voice_samples,
+                cfg_scale, steps, seed, speed, max_words,
+                progress_callback=on_chunk_progress,
+                step_callback=on_step_progress,
+            )
+
+            if not has_any_voice:
+                audio = _apply_speed_output(audio, speed)
+
+            # Compute speaker similarity when voice cloning is active
+            similarity = None
+            # Use the first non-None voice reference for comparison
+            ref_for_sim = next((v for v in voice_samples if v is not None), None)
+            if has_any_voice and ref_for_sim is not None and audio.size > 0 and app.state.speaker_sim is not None:
+                try:
+                    sim_scores = app.state.speaker_sim.compute(
+                        ref_for_sim, audio, SAMPLE_RATE_1P5B
+                    )
+                    similarity = {k: round(v, 4) for k, v in sim_scores.items()}
+                    # Send similarity as its own SSE event so the UI updates immediately
+                    progress_queue.put({"type": "similarity", "similarity": similarity})
+                except Exception as sim_err:
+                    print(f"[generate] Speaker similarity failed: {sim_err}")
+
+            wav_bytes = TTSService1p5B.audio_to_wav_bytes(audio)
+            audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+            progress_queue.put({"type": "complete", "audio": audio_b64})
+        except Exception as e:
+            traceback.print_exc()
+            progress_queue.put({"type": "error", "message": str(e)})
+
+    # Start generation in background thread
+    thread = threading.Thread(target=_run_generation, daemon=True)
+    thread.start()
+
+    async def _event_stream():
+        while True:
+            try:
+                event = await asyncio.to_thread(progress_queue.get, True, 300)
+            except Empty:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Generation timed out'})}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["type"] in ("complete", "error"):
+                break
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
-    """Transcribe an audio file with the ASR model.
+    """Transcribe an audio file with the ASR model (SSE with token-level progress).
 
-    Returns JSON with transcribed text and word-level segments.
+    Returns Server-Sent Events:
+        loading   — model is being loaded
+        loaded    — model ready
+        progress  — token generation progress {tokens_generated, max_tokens}
+        complete  — final result {text, segments}
+        error     — failure message
 
     Form fields:
         audio: Audio file (WAV/MP3/FLAC/etc.)
@@ -1162,23 +1320,64 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             status_code=503,
             detail="ASR model not configured. Set MODEL_PATH_ASR environment variable to enable.",
         )
-    try:
-        asr_service: ASRService = await asyncio.to_thread(hot_swap.get_or_load, "asr")
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to load ASR model: {e}")
 
+    # Read and decode audio before starting SSE stream
     try:
         audio_bytes = await audio.read()
         audio_array, sr = _load_audio_bytes(audio_bytes, audio.filename or "")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not decode audio file: {e}")
 
-    try:
-        result = await asyncio.to_thread(asr_service.transcribe, audio_array, sr)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    progress_queue: Queue = Queue()
 
-    return result
+    def _run_transcription():
+        try:
+            progress_queue.put({"type": "loading"})
+            asr_service: ASRService = hot_swap.get_or_load("asr")
+            progress_queue.put({"type": "loaded"})
 
+            def on_token_progress(tokens: int, max_tokens: int):
+                progress_queue.put({
+                    "type": "progress",
+                    "tokens_generated": tokens,
+                    "max_tokens": max_tokens,
+                })
+
+            result = asr_service.transcribe(audio_array, sr, progress_callback=on_token_progress)
+            audio_duration_sec = round(len(audio_array) / sr, 2)
+            progress_queue.put({"type": "complete", "result": result, "audio_duration": audio_duration_sec})
+        except Exception as e:
+            traceback.print_exc()
+            progress_queue.put({"type": "error", "message": str(e)})
+
+    thread = threading.Thread(target=_run_transcription, daemon=True)
+    thread.start()
+
+    async def _event_stream():
+        while True:
+            try:
+                event = await asyncio.to_thread(progress_queue.get, True, 300)
+            except Empty:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Transcription timed out'})}\n\n"
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["type"] in ("complete", "error"):
+                break
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+# Serve SvelteKit static assets (_app/, etc.) — must be after all API routes.
+# StaticFiles handles real files (JS/CSS bundles in _app/). The catch-all below
+# serves index.html for any other path so client-side routing (e.g. /logs) works.
+app.mount("/_app", StaticFiles(directory=FRONTEND_BUILD / "_app"), name="frontend-assets")
+
+
+@app.get("/{path:path}")
+async def spa_fallback(path: str):
+    """Serve index.html for any path not matched by API routes or static assets.
+    This enables SvelteKit client-side routing (e.g. /logs)."""
+    file = FRONTEND_BUILD / path
+    if file.is_file():
+        return FileResponse(file)
+    return FileResponse(FRONTEND_BUILD / "index.html")

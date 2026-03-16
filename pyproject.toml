@@ -41,7 +41,11 @@ dependencies = [
 
 [project.optional-dependencies]
 streamingtts = [
-  "transformers==4.51.3", 
+  "transformers==4.51.3",
+]
+similarity = [
+  "wespeakerruntime",
+  "onnxruntime",
 ]
 
 [project.entry-points."vllm.general_plugins"]
