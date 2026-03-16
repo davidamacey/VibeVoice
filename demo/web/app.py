@@ -1,9 +1,13 @@
 import datetime
 import builtins
 import asyncio
+import gc
 import io
 import json
 import os
+import re
+import subprocess
+import tempfile
 import threading
 import traceback
 from pathlib import Path
@@ -128,9 +132,15 @@ class StreamingTTSService:
         self._ensure_voice_cached(self.default_voice_key)
 
     def _load_voice_presets(self) -> Dict[str, Path]:
-        voices_dir = BASE.parent / "voices" / "streaming_model"
-        if not voices_dir.exists():
-            raise RuntimeError(f"Voices directory not found: {voices_dir}")
+        # Prefer NAS-resident voices when the model path is set; fall back to repo copy
+        model_voices = Path(self.model_path) / "voices"
+        repo_voices = BASE.parent / "voices" / "streaming_model"
+        if model_voices.exists():
+            voices_dir = model_voices
+        elif repo_voices.exists():
+            voices_dir = repo_voices
+        else:
+            raise RuntimeError(f"Voices directory not found at {model_voices} or {repo_voices}")
 
         presets: Dict[str, Path] = {}
         for pt_path in voices_dir.rglob("*.pt"):
@@ -394,16 +404,26 @@ class TTSService1p5B:
         self,
         text: str,
         voice_audio: Optional[np.ndarray] = None,
+        voice_samples: Optional[List[np.ndarray]] = None,
         cfg_scale: float = 3.0,
         steps: Optional[int] = None,
+        seed: Optional[int] = None,
     ) -> np.ndarray:
-        """Synthesize speech. Returns float32 numpy array at 24 kHz."""
+        """Synthesize speech. Returns float32 numpy array at 24 kHz.
+
+        voice_audio: single reference for Speaker 0 (convenience wrapper).
+        voice_samples: per-speaker list [spk0, spk1, ...] (takes precedence).
+        seed: RNG seed for reproducible generation (None = random).
+        """
         if steps is not None:
             self.model.set_ddpm_inference_steps(steps)
 
-        voice_samples = None
-        if voice_audio is not None:
-            voice_samples = [voice_audio]
+        # Build voice_samples list: explicit list takes precedence over single audio
+        if voice_samples is None:
+            voice_samples = [voice_audio] if voice_audio is not None else None
+
+        if seed is not None:
+            torch.manual_seed(seed)
 
         with self._lock:
             inputs = self.processor(
@@ -431,12 +451,350 @@ class TTSService1p5B:
 
     @staticmethod
     def audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = SAMPLE_RATE_1P5B) -> bytes:
-        audio = np.clip(audio, -1.0, 1.0)
-        tensor = torch.from_numpy(audio).unsqueeze(0)
+        import wave as _wave
+        audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
         buf = io.BytesIO()
-        torchaudio.save(buf, tensor, sample_rate, format="wav")
+        with _wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(audio_int16.tobytes())
         buf.seek(0)
         return buf.read()
+
+
+# ---------------------------------------------------------------------------
+# ASR service (non-streaming, REST-based)
+# ---------------------------------------------------------------------------
+
+class ASRService:
+    """Wraps VibeVoiceASRForConditionalGeneration for REST-based transcription."""
+
+    def __init__(self, model_path: str, device: str = "cuda"):
+        self.model_path = model_path
+        self.device = device
+        self.model = None
+        self.processor = None
+        self._lock = threading.Lock()
+
+    def load(self) -> None:
+        from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration
+        from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
+
+        tokenizer_path = os.environ.get("TOKENIZER_PATH", "Qwen/Qwen2.5-7B")
+        print(f"[ASR startup] Loading processor from {self.model_path}, tokenizer={tokenizer_path}")
+        self.processor = VibeVoiceASRProcessor.from_pretrained(
+            self.model_path,
+            language_model_pretrained_name=tokenizer_path,
+        )
+
+        load_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        print(f"[ASR startup] Loading model with dtype={load_dtype}, device={self.device}")
+        # Note: don't pass dtype= to from_pretrained — the ASR config already stores
+        # "dtype" as a string, and passing a torch.dtype object overwrites it and
+        # breaks HF's JSON config logging. Cast after load instead.
+        try:
+            self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
+                self.model_path,
+                attn_implementation="flash_attention_2",
+                trust_remote_code=True,
+            )
+        except Exception:
+            self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
+                self.model_path,
+                attn_implementation="sdpa",
+                trust_remote_code=True,
+            )
+        self.model = self.model.to(load_dtype).to(self.device)
+        self.model.eval()
+        print("[ASR startup] ASR model ready.")
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int = 24000) -> dict:
+        """Transcribe audio array. Returns dict with text and segments."""
+        ASR_SAMPLE_RATE = 24000
+        if sample_rate != ASR_SAMPLE_RATE:
+            waveform = torch.from_numpy(audio).unsqueeze(0).float()
+            waveform = torchaudio.functional.resample(waveform, sample_rate, ASR_SAMPLE_RATE)
+            audio = waveform.squeeze(0).numpy()
+
+        with self._lock:
+            inputs = self.processor(
+                audio=audio,
+                sampling_rate=ASR_SAMPLE_RATE,
+                return_tensors="pt",
+                padding=True,
+                add_generation_prompt=True,
+            )
+            load_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+            casted = {}
+            for k, v in inputs.items():
+                if isinstance(v, torch.Tensor):
+                    v = v.to(device=self.device, dtype=load_dtype) if v.is_floating_point() else v.to(self.device)
+                casted[k] = v
+            inputs = casted
+            gen_cfg = {
+                "max_new_tokens": 512,
+                "pad_token_id": self.processor.pad_id,
+                "eos_token_id": self.processor.tokenizer.eos_token_id,
+                "do_sample": False,
+            }
+            device_type = "cuda" if self.device.startswith("cuda") else "cpu"
+            with torch.no_grad(), torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=(device_type == "cuda")):
+                output_ids = self.model.generate(**inputs, **gen_cfg)
+
+        input_length = inputs["input_ids"].shape[1]
+        generated_ids = output_ids[0, input_length:]
+        eos_pos = (generated_ids == self.processor.tokenizer.eos_token_id).nonzero(as_tuple=True)[0]
+        if len(eos_pos) > 0:
+            generated_ids = generated_ids[: eos_pos[0] + 1]
+
+        raw_text = self.processor.decode(generated_ids, skip_special_tokens=True)
+        try:
+            segments = self.processor.post_process_transcription(raw_text)
+        except Exception:
+            segments = []
+
+        return {"text": raw_text, "segments": segments}
+
+
+# ---------------------------------------------------------------------------
+# Hot-swap model manager — keeps one heavy model in VRAM at a time
+# ---------------------------------------------------------------------------
+
+class HotSwapManager:
+    """Load one heavy model (TTS 1.5B / Large / ASR) on demand.
+
+    Only one model is kept in VRAM at a time.  Requesting a different model
+    automatically unloads the current one first via del + gc + cuda cache clear.
+    The 0.5B streaming model is managed separately and is always loaded.
+    """
+
+    def __init__(self, device: str) -> None:
+        self.device = device
+        self._configs: Dict[str, dict] = {}      # model_id -> {type, path, steps}
+        self._current_id: Optional[str] = None
+        self._current_service: Optional[Any] = None
+        self._lock = threading.Lock()
+
+    def register(self, model_id: str, model_type: str, path: str, steps: int = 20) -> None:
+        """Register a model config without loading it."""
+        self._configs[model_id] = {"type": model_type, "path": path, "steps": steps}
+
+    def is_registered(self, model_id: str) -> bool:
+        return model_id in self._configs
+
+    def get_or_load(self, model_id: str) -> Any:
+        """Return the service for model_id, loading (and unloading the current) as needed.
+        Blocking — call via asyncio.to_thread from async handlers."""
+        with self._lock:
+            if self._current_id == model_id and self._current_service is not None:
+                return self._current_service
+            self._unload_current()
+            self._current_service = self._load(model_id)
+            self._current_id = model_id
+            return self._current_service
+
+    def _unload_current(self) -> None:
+        if self._current_service is None:
+            return
+        print(f"[hot-swap] Unloading {self._current_id}")
+        svc = self._current_service
+        self._current_service = None
+        self._current_id = None
+        if hasattr(svc, "model") and svc.model is not None:
+            del svc.model
+            svc.model = None
+        if hasattr(svc, "processor") and svc.processor is not None:
+            del svc.processor
+            svc.processor = None
+        del svc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[hot-swap] VRAM freed.")
+
+    def _load(self, model_id: str) -> Any:
+        cfg = self._configs.get(model_id)
+        if cfg is None:
+            raise ValueError(f"Model {model_id!r} not registered")
+        print(f"[hot-swap] Loading {model_id} from {cfg['path']}")
+        if cfg["type"] == "tts":
+            svc: Any = TTSService1p5B(
+                model_path=cfg["path"], device=self.device, inference_steps=cfg["steps"]
+            )
+        else:
+            svc = ASRService(model_path=cfg["path"], device=self.device)
+        svc.load()
+        print(f"[hot-swap] {model_id} ready.")
+        return svc
+
+    def status(self) -> Dict[str, bool]:
+        """Return {model_id: is_currently_loaded} for all registered models."""
+        return {mid: (self._current_id == mid) for mid in self._configs}
+
+    def currently_loaded(self) -> Optional[str]:
+        return self._current_id
+
+
+def _load_audio_bytes(audio_bytes: bytes, filename: str = "") -> tuple:
+    """Load audio from raw bytes. Returns (waveform np.float32 1D, sample_rate int).
+
+    Tries soundfile first (WAV/FLAC/OGG/MP3), then falls back to ffmpeg
+    for video containers (MP4, MKV, WebM, etc.) or unsupported codecs.
+    """
+    import soundfile as sf
+
+    # Try soundfile (works for wav, flac, ogg, mp3 with libsndfile >= 1.1)
+    try:
+        buf = io.BytesIO(audio_bytes)
+        data, sr = sf.read(buf, dtype="float32", always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        return data, sr
+    except Exception:
+        pass
+
+    # Fallback: ffmpeg can handle MP4/MKV/WebM/MP3/etc.
+    suffix = Path(filename).suffix if filename else ".bin"
+    if not suffix:
+        suffix = ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(audio_bytes)
+        tmp_in_path = tmp_in.name
+    tmp_out_path = tmp_in_path + ".wav"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_in_path,
+             "-ac", "1", "-ar", "24000", "-f", "wav", tmp_out_path],
+            capture_output=True, check=True,
+        )
+        data, sr = sf.read(tmp_out_path, dtype="float32", always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        return data, sr
+    finally:
+        os.unlink(tmp_in_path)
+        if os.path.exists(tmp_out_path):
+            os.unlink(tmp_out_path)
+
+
+def _split_into_word_chunks(text: str, max_words: int) -> List[str]:
+    """Split text at sentence boundaries so no chunk exceeds max_words."""
+    words = text.split()
+    if len(words) <= max_words:
+        return [text]
+
+    # Split on sentence-ending punctuation, keeping the delimiter
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks: List[str] = []
+    current: List[str] = []
+    current_words = 0
+
+    for sentence in sentences:
+        s_words = len(sentence.split())
+        if current_words + s_words > max_words and current:
+            chunks.append(" ".join(current))
+            current = [sentence]
+            current_words = s_words
+        else:
+            current.append(sentence)
+            current_words += s_words
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _speed_shift_audio(audio: np.ndarray, speed: float) -> np.ndarray:
+    """Time-stretch audio via linear interpolation (pitch-preserving for small deltas).
+    Used on reference voice audio before model conditioning."""
+    if abs(speed - 1.0) < 0.01 or audio.size == 0:
+        return audio
+    target_len = max(1, int(len(audio) / speed))
+    src_indices = np.arange(len(audio))
+    tgt_indices = np.linspace(0, len(audio) - 1, target_len)
+    return np.interp(tgt_indices, src_indices, audio).astype(np.float32)
+
+
+def _generate_with_pauses(
+    service: "TTSService1p5B",
+    text: str,
+    voice_audio: Optional[np.ndarray],
+    voice_samples: Optional[List[Optional[np.ndarray]]],
+    cfg_scale: float,
+    steps: Optional[int],
+    seed: Optional[int],
+    speed: float,
+    max_words: int,
+) -> np.ndarray:
+    """Split text on [pause:Xs]/[pause:Xms] markers, auto-chunk long segments,
+    generate each piece, and stitch with silence.
+
+    Speed is applied to the reference voice audio before model conditioning
+    (pitch-preserving via interpolation).  When no voice reference is provided,
+    speed falls back to output resampling.
+    """
+    # Apply speed to reference audio so the model conditions on the adjusted tempo
+    shifted_voice_audio = _speed_shift_audio(voice_audio, speed) if voice_audio is not None else None
+    shifted_voice_samples: Optional[List[Optional[np.ndarray]]] = None
+    if voice_samples is not None:
+        shifted_voice_samples = [
+            (_speed_shift_audio(v, speed) if v is not None else None)
+            for v in voice_samples
+        ]
+
+    # Split on [pause:Xs] / [pause:Xms] — re.split with 2 capture groups gives
+    # (text, dur_str, unit) triples
+    parts = re.split(r'\[pause:(\d+(?:\.\d+)?)(s|ms)?\]', text)
+    audio_chunks: List[np.ndarray] = []
+
+    for idx in range(0, len(parts), 3):
+        chunk_text = parts[idx].strip()
+        if chunk_text:
+            # Ensure at least one Speaker prefix is present
+            if not re.search(r'Speaker\s*\d+\s*:', chunk_text):
+                chunk_text = f"Speaker 0: {chunk_text}"
+
+            # Auto-chunk long segments at sentence boundaries
+            sub_chunks = _split_into_word_chunks(chunk_text, max_words)
+            for sub in sub_chunks:
+                chunk_audio = service.generate(
+                    text=sub,
+                    voice_audio=shifted_voice_audio,
+                    voice_samples=shifted_voice_samples,
+                    cfg_scale=cfg_scale,
+                    steps=steps,
+                    seed=seed,
+                )
+                if chunk_audio.size > 0:
+                    audio_chunks.append(chunk_audio)
+
+        # Insert silence after this segment if a pause marker follows
+        if idx + 2 < len(parts):
+            try:
+                duration = float(parts[idx + 1])
+                unit = parts[idx + 2] or "s"
+                if unit == "ms":
+                    duration /= 1000.0
+                silence_samples = max(0, int(duration * SAMPLE_RATE_1P5B))
+                audio_chunks.append(np.zeros(silence_samples, dtype=np.float32))
+            except (ValueError, TypeError):
+                pass
+
+    if not audio_chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(audio_chunks)
+
+
+def _apply_speed_output(audio: np.ndarray, speed: float) -> np.ndarray:
+    """Fallback output resample when no voice reference is provided.
+    Changes pitch proportionally — use only when reference-based speed isn't available."""
+    if abs(speed - 1.0) < 0.01 or audio.size == 0:
+        return audio
+    waveform = torch.from_numpy(audio).unsqueeze(0).float()
+    new_sr = max(1, int(round(SAMPLE_RATE_1P5B / speed)))
+    waveform = torchaudio.functional.resample(waveform, SAMPLE_RATE_1P5B, new_sr)
+    return waveform.squeeze(0).numpy()
 
 
 app = FastAPI()
@@ -460,21 +818,28 @@ async def _startup() -> None:
     app.state.device = device
     app.state.websocket_lock = asyncio.Lock()
 
-    # Optionally load 1.5B model if MODEL_PATH_1P5B is set
+    # Register heavy models in the hot-swap manager (lazy — nothing loaded yet)
+    hot_swap = HotSwapManager(device=device)
+
     model_path_1p5b = os.environ.get("MODEL_PATH_1P5B")
-    app.state.tts_service_1p5b = None
     if model_path_1p5b:
         steps_1p5b = int(os.environ.get("MODEL_1P5B_STEPS", "20"))
-        service_1p5b = TTSService1p5B(
-            model_path=model_path_1p5b,
-            device=device,
-            inference_steps=steps_1p5b,
-        )
-        service_1p5b.load()
-        app.state.tts_service_1p5b = service_1p5b
-        print(f"[startup] 1.5B model ready at {model_path_1p5b}")
+        hot_swap.register("1.5b", "tts", model_path_1p5b, steps_1p5b)
+        print(f"[startup] 1.5B model registered (path={model_path_1p5b})")
 
-    print("[startup] All models ready.")
+    model_path_large = os.environ.get("MODEL_PATH_LARGE")
+    if model_path_large:
+        steps_large = int(os.environ.get("MODEL_LARGE_STEPS", "20"))
+        hot_swap.register("large", "tts", model_path_large, steps_large)
+        print(f"[startup] Large model registered (path={model_path_large})")
+
+    model_path_asr = os.environ.get("MODEL_PATH_ASR")
+    if model_path_asr:
+        hot_swap.register("asr", "asr", model_path_asr)
+        print(f"[startup] ASR model registered (path={model_path_asr})")
+
+    app.state.hot_swap = hot_swap
+    print("[startup] Hot-swap manager ready. Heavy models load on first request.")
 
 
 def streaming_tts(text: str, **kwargs) -> Iterator[np.ndarray]:
@@ -489,6 +854,9 @@ async def websocket_stream(ws: WebSocket) -> None:
     cfg_param = ws.query_params.get("cfg")
     steps_param = ws.query_params.get("steps")
     voice_param = ws.query_params.get("voice")
+    do_sample_param = ws.query_params.get("do_sample", "false")
+    temperature_param = ws.query_params.get("temperature")
+    top_p_param = ws.query_params.get("top_p")
 
     try:
         cfg_scale = float(cfg_param) if cfg_param is not None else 1.5
@@ -502,6 +870,15 @@ async def websocket_stream(ws: WebSocket) -> None:
             inference_steps = None
     except ValueError:
         inference_steps = None
+    do_sample = do_sample_param.lower() in ("1", "true", "yes")
+    try:
+        temperature = float(temperature_param) if temperature_param is not None else 0.9
+    except ValueError:
+        temperature = 0.9
+    try:
+        top_p = float(top_p_param) if top_p_param is not None else 0.9
+    except ValueError:
+        top_p = 0.9
 
     service: StreamingTTSService = app.state.tts_service
     lock: asyncio.Lock = app.state.websocket_lock
@@ -563,6 +940,9 @@ async def websocket_stream(ws: WebSocket) -> None:
             cfg_scale=cfg_scale,
             inference_steps=inference_steps,
             voice_key=voice_param,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
             log_callback=enqueue_log,
             stop_event=stop_signal,
         )
@@ -638,11 +1018,34 @@ def get_config():
 
 @app.get("/models")
 def get_models():
-    """List available loaded models."""
-    models = [{"id": "0.5b-streaming", "name": "VibeVoice Realtime 0.5B (streaming)", "streaming": True}]
-    if app.state.tts_service_1p5b is not None:
-        models.append({"id": "1.5b", "name": "VibeVoice TTS 1.5B (voice cloning)", "streaming": False})
+    """List available models (registered + loaded status)."""
+    hot_swap: HotSwapManager = app.state.hot_swap
+    hs_status = hot_swap.status()
+    models = [
+        {"id": "0.5b-streaming", "name": "VibeVoice Realtime 0.5B (streaming)",
+         "streaming": True, "loaded": True},
+    ]
+    if "1.5b" in hs_status:
+        models.append({"id": "1.5b", "name": "VibeVoice TTS 1.5B (voice cloning)",
+                        "streaming": False, "loaded": hs_status["1.5b"]})
+    if "large" in hs_status:
+        models.append({"id": "large", "name": "VibeVoice Large (voice cloning, 7B)",
+                        "streaming": False, "loaded": hs_status["large"]})
+    if "asr" in hs_status:
+        models.append({"id": "asr", "name": "VibeVoice ASR 7B (transcription)",
+                        "streaming": False, "asr": True, "loaded": hs_status["asr"]})
     return {"models": models}
+
+
+async def _load_voice_file(upload: UploadFile) -> np.ndarray:
+    """Read an uploaded audio file and return float32 mono array at SAMPLE_RATE_1P5B."""
+    audio_bytes = await upload.read()
+    data, sr = _load_audio_bytes(audio_bytes, upload.filename or "")
+    if sr != SAMPLE_RATE_1P5B:
+        waveform = torch.from_numpy(data).unsqueeze(0)
+        waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE_1P5B)
+        data = waveform.squeeze(0).numpy()
+    return data.astype(np.float32)
 
 
 @app.post("/generate")
@@ -650,54 +1053,91 @@ async def generate_1p5b(
     text: str = Form(...),
     cfg_scale: float = Form(3.0),
     steps: Optional[int] = Form(None),
-    voice: Optional[UploadFile] = File(None),
+    speed: float = Form(1.0),
+    seed: Optional[int] = Form(None),
+    max_words: int = Form(200),
+    model_id: str = Form("1.5b"),
+    voice_0: Optional[UploadFile] = File(None),
+    voice_1: Optional[UploadFile] = File(None),
+    voice_2: Optional[UploadFile] = File(None),
+    voice_3: Optional[UploadFile] = File(None),
 ):
-    """Generate speech with the 1.5B model (non-streaming, supports voice cloning).
+    """Generate speech with the 1.5B or Large model (non-streaming, supports voice cloning).
 
-    Returns a WAV file as binary response.
+    Supports [pause:Xs] / [pause:Xms] markers in text for programmatic silence.
+    Natural pauses via punctuation (..., ,, —) are handled by the model automatically.
 
     Form fields:
-        text: Text to synthesize.
+        text: Text to synthesize. Use 'Speaker N: text' for multi-speaker.
+              Insert [pause:0.5s] or [pause:500ms] for timed silences.
         cfg_scale: CFG guidance scale (default 3.0).
         steps: DDPM inference steps override (default: model default).
-        voice: Optional WAV/MP3 reference audio file for voice cloning.
+        speed: Speed multiplier 0.5–2.0 (default 1.0). Applied to reference audio for
+               pitch-preserving conditioning; falls back to output resample with no reference.
+        seed: RNG seed for reproducible output (default: random).
+        max_words: Auto-chunk segments longer than this word count (default 200).
+        model_id: '1.5b' or 'large' (default '1.5b').
+        voice_0..voice_3: Optional audio files for per-speaker voice cloning.
     """
-    service_1p5b: Optional[TTSService1p5B] = app.state.tts_service_1p5b
-    if service_1p5b is None:
+    # Select service via hot-swap manager (loads on demand, unloads previous)
+    hot_swap: HotSwapManager = app.state.hot_swap
+    if not hot_swap.is_registered(model_id):
         raise HTTPException(
             status_code=503,
-            detail="1.5B model not loaded. Set MODEL_PATH_1P5B environment variable to enable.",
+            detail=f"Model '{model_id}' is not configured. Check MODEL_PATH_1P5B / MODEL_PATH_LARGE environment variables.",
         )
+    try:
+        service: TTSService1p5B = await asyncio.to_thread(hot_swap.get_or_load, model_id)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to load model '{model_id}': {e}")
 
     if not text.strip():
         raise HTTPException(status_code=400, detail="text cannot be empty")
 
-    # Load voice reference audio if provided
-    voice_audio = None
-    if voice is not None:
-        try:
-            audio_bytes = await voice.read()
-            buf = io.BytesIO(audio_bytes)
-            waveform, sr = torchaudio.load(buf)
-            if sr != SAMPLE_RATE_1P5B:
-                waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE_1P5B)
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(0, keepdim=True)
-            voice_audio = waveform.squeeze(0).numpy()
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Could not decode voice file: {e}")
+    speed = max(0.5, min(2.0, speed))
+    max_words = max(50, min(500, max_words))
+
+    # Load per-speaker voice files
+    voice_uploads = [voice_0, voice_1, voice_2, voice_3]
+    voice_samples: List[Optional[np.ndarray]] = []
+    has_any_voice = False
+    for upload in voice_uploads:
+        if upload is not None:
+            try:
+                arr = await _load_voice_file(upload)
+                voice_samples.append(arr)
+                has_any_voice = True
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Could not decode voice file: {e}")
+        else:
+            voice_samples.append(None)
+
+    # Normalize: if no voices provided, pass None; otherwise pass the list
+    resolved_voice_samples: Optional[List[Optional[np.ndarray]]] = voice_samples if has_any_voice else None
+    resolved_voice_audio: Optional[np.ndarray] = voice_samples[0] if has_any_voice else None
 
     try:
         audio = await asyncio.to_thread(
-            service_1p5b.generate,
-            text=text,
-            voice_audio=voice_audio,
-            cfg_scale=cfg_scale,
-            steps=steps,
+            _generate_with_pauses,
+            service,
+            text,
+            resolved_voice_audio,
+            resolved_voice_samples,
+            cfg_scale,
+            steps,
+            seed,
+            speed,
+            max_words,
         )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    # If no voice reference was given, speed couldn't be applied at conditioning time —
+    # fall back to output resampling
+    if not has_any_voice:
+        audio = _apply_speed_output(audio, speed)
 
     wav_bytes = TTSService1p5B.audio_to_wav_bytes(audio)
     return Response(
@@ -705,4 +1145,40 @@ async def generate_1p5b(
         media_type="audio/wav",
         headers={"Content-Disposition": 'attachment; filename="output.wav"'},
     )
+
+
+@app.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Transcribe an audio file with the ASR model.
+
+    Returns JSON with transcribed text and word-level segments.
+
+    Form fields:
+        audio: Audio file (WAV/MP3/FLAC/etc.)
+    """
+    hot_swap: HotSwapManager = app.state.hot_swap
+    if not hot_swap.is_registered("asr"):
+        raise HTTPException(
+            status_code=503,
+            detail="ASR model not configured. Set MODEL_PATH_ASR environment variable to enable.",
+        )
+    try:
+        asr_service: ASRService = await asyncio.to_thread(hot_swap.get_or_load, "asr")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to load ASR model: {e}")
+
+    try:
+        audio_bytes = await audio.read()
+        audio_array, sr = _load_audio_bytes(audio_bytes, audio.filename or "")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {e}")
+
+    try:
+        result = await asyncio.to_thread(asr_service.transcribe, audio_array, sr)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
 

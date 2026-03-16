@@ -164,6 +164,7 @@ class VibeVoiceProcessor:
         self,
         text: Optional[Union[str, List[str], TextInput, PreTokenizedInput, List[TextInput], List[PreTokenizedInput]]] = None,
         voice_samples: Optional[Union[List[Union[str, np.ndarray]], List[List[Union[str, np.ndarray]]]]] = None,
+        style: Optional[str] = None,
         padding: Union[bool, str, PaddingStrategy] = True,
         truncation: Union[bool, str, TruncationStrategy] = False,
         max_length: Optional[int] = None,
@@ -185,6 +186,12 @@ class VibeVoiceProcessor:
                 Voice samples for each script. Can be:
                 - A list of samples for a single script
                 - A list of lists for batch processing
+            style (`str`, *optional*):
+                A free-text style or emotion instruction inserted into the prompt as a
+                conditioning hint, e.g. ``"deeply sad, voice barely above a whisper"``
+                or ``"furious and enraged, sharp and tense"``.  The text is placed
+                between the voice-sample block and the ``Text input:`` section so it
+                is read by the LLM backbone but never spoken aloud.
             padding (`bool`, `str` or `PaddingStrategy`, defaults to `True`):
                 Whether to pad sequences to the same length
             truncation (`bool`, `str` or `TruncationStrategy`, defaults to `False`):
@@ -213,7 +220,7 @@ class VibeVoiceProcessor:
             # Batch input
             texts = text
             is_batched = True
-            
+
         # Handle voice samples
         if voice_samples is not None:
             if not is_batched or (isinstance(voice_samples[0], (str, np.ndarray))):
@@ -224,11 +231,11 @@ class VibeVoiceProcessor:
                 voice_samples_list = voice_samples
         else:
             voice_samples_list = [None] * len(texts)
-        
+
         # Process each input
         all_encodings = []
         for text_input, voice_input in zip(texts, voice_samples_list):
-            encoding = self._process_single(text_input, voice_input)
+            encoding = self._process_single(text_input, voice_input, style=style)
             all_encodings.append(encoding)
             
         # Combine batch
@@ -247,6 +254,7 @@ class VibeVoiceProcessor:
         self,
         text: Union[str, TextInput],
         voice_samples: Optional[List[Union[str, np.ndarray]]] = None,
+        style: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a single podcast script."""
         # Determine if text is a file path or direct script
@@ -281,7 +289,14 @@ class VibeVoiceProcessor:
         # Build full token sequence
         full_tokens = system_tokens + voice_tokens
         speech_input_mask = [False] * len(system_tokens) + voice_speech_masks
-        
+
+        # Optional style / emotion conditioning line (read by LLM, never spoken)
+        if style:
+            style_line = f" Style: {style}\n"
+            style_tokens = self.tokenizer.encode(style_line, add_special_tokens=False)
+            full_tokens += style_tokens
+            speech_input_mask += [False] * len(style_tokens)
+
         # Add text input section
         full_tokens += self.tokenizer.encode(' Text input:\n', add_special_tokens=False)
         speech_input_mask += [False] * len(self.tokenizer.encode(' Text input:\n', add_special_tokens=False))

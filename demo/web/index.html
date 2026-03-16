@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <meta charset="UTF-8" />
-<title>VibeVoice-Realtime TTS Demo</title>
+<title>VibeVoice Demo</title>
 <style>
   :root {
     --bg: #f5f7fc;
@@ -141,12 +141,8 @@
   }
 
   @keyframes previewCaret {
-    0%, 50% {
-      opacity: 1;
-    }
-    51%, 100% {
-      opacity: 0;
-    }
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
   }
 
   .control-panel {
@@ -225,6 +221,106 @@
     box-shadow: 0 10px 20px rgba(85, 98, 255, 0.28);
   }
 
+  /* Toggle switch */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: #cdd2e8;
+    border-radius: 18px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .toggle-track::before {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+
+  .toggle-switch input:checked + .toggle-track {
+    background: var(--accent);
+  }
+
+  .toggle-switch input:checked + .toggle-track::before {
+    transform: translateX(16px);
+  }
+
+  /* Tooltip */
+  .tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: default;
+  }
+
+  .tip-icon {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-left: 4px;
+    user-select: none;
+  }
+
+  .tip-box {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1f2742;
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 8px 11px;
+    border-radius: 8px;
+    width: 240px;
+    z-index: 100;
+    pointer-events: none;
+    white-space: normal;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+  }
+
+  .tip-box::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1f2742;
+  }
+
+  .tip:hover .tip-box {
+    display: block;
+  }
+
   #playback:active {
     transform: translateY(0);
   }
@@ -253,6 +349,30 @@
   .secondary-btn:disabled {
     opacity: 0.55;
     cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 10px 24px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    box-shadow: 0 8px 16px rgba(85, 98, 255, 0.25);
+    transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 20px rgba(85, 98, 255, 0.28);
+  }
+
+  .btn-primary:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
   }
 
   .metrics {
@@ -294,6 +414,285 @@
     margin-top: 0px;
   }
 
+  /* File input */
+  .file-input {
+    border: 1px solid rgba(31, 39, 66, 0.14);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    background: #fbfcff;
+    color: var(--text-primary);
+    cursor: pointer;
+    width: 100%;
+    max-width: 400px;
+  }
+
+  .file-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(85, 98, 255, 0.18);
+  }
+
+  /* 1.5B audio player container */
+  #audio1p5bContainer {
+    background: linear-gradient(135deg, #eef2ff 0%, #f7f9ff 100%);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  #audio1p5b {
+    width: 100%;
+  }
+
+  /* Transcript display */
+  .transcript-display {
+    background: #f7f9ff;
+    border: 1px solid rgba(31, 39, 66, 0.12);
+    border-radius: 10px;
+    padding: 12px 14px;
+    max-height: 280px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .transcript-line {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(31, 39, 66, 0.06);
+    align-items: baseline;
+  }
+
+  .transcript-line:last-child {
+    border-bottom: none;
+  }
+
+  .transcript-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .transcript-text {
+    color: var(--text-primary);
+  }
+
+  /* ASR result */
+  .asr-result {
+    background: #f7f9ff;
+    border: 1px solid rgba(31, 39, 66, 0.12);
+    border-radius: 10px;
+    padding: 14px 16px;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary);
+    margin: 0;
+  }
+
+  /* ASR segments table */
+  .asr-segments {
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid rgba(31, 39, 66, 0.12);
+    border-radius: 10px;
+    font-size: 13px;
+  }
+
+  .asr-segment {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(31, 39, 66, 0.07);
+    align-items: start;
+  }
+
+  .asr-segment:last-child {
+    border-bottom: none;
+  }
+
+  .asr-segment:nth-child(even) {
+    background: #f9faff;
+  }
+
+  .asr-segment-time {
+    color: var(--text-muted);
+    font-family: 'Fira Code', 'Courier New', Courier, monospace;
+    font-size: 12px;
+    padding-top: 1px;
+  }
+
+  /* Section divider */
+  .section-divider {
+    border: none;
+    border-top: 1px solid rgba(31, 39, 66, 0.1);
+    margin: 4px 0;
+  }
+
+  /* Generation status indicator */
+  .gen-status {
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .gen-status::before {
+    content: "";
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* Multi-speaker editor */
+  .speaker-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .speaker-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .speaker-label-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .speaker-select {
+    width: 110px;
+    border: 1px solid rgba(31, 39, 66, 0.14);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    background: #fbfcff;
+    color: var(--text-primary);
+  }
+
+  .speaker-textarea {
+    flex: 1;
+    min-height: 72px;
+    border: 1px solid rgba(31, 39, 66, 0.14);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+    resize: vertical;
+    color: var(--text-primary);
+    background: #fbfcff;
+  }
+
+  .speaker-textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(85, 98, 255, 0.15);
+    background: #fff;
+  }
+
+  .speaker-remove-btn {
+    background: none;
+    border: 1px solid rgba(31, 39, 66, 0.18);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 4px 8px;
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+
+  .speaker-remove-btn:hover {
+    background: #fee2e2;
+    border-color: #f87171;
+    color: #b91c1c;
+  }
+
+  .pause-btn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .pause-btn {
+    border: 1px solid rgba(85, 98, 255, 0.28);
+    background: #f1f3ff;
+    color: var(--accent);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: 'Fira Code', 'Courier New', monospace;
+    transition: background 0.15s;
+  }
+
+  .pause-btn:hover {
+    background: #e0e4ff;
+  }
+
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+
+  .model-badge--loaded {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+  }
+
+  .model-badge--unloaded {
+    background: #f3f4f6;
+    color: #6b7280;
+    border: 1px solid #d1d5db;
+  }
+
+  .model-badge--loading {
+    background: #fef9c3;
+    color: #a16207;
+    border: 1px solid #fde68a;
+    animation: badge-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes badge-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.55; }
+  }
+
   @media (max-width: 720px) {
     .app-shell {
       padding: 28px 20px 36px;
@@ -310,18 +709,41 @@
       gap: 16px;
     }
 
-    #playback {
+    #playback, .btn-primary {
       width: 100%;
       text-align: center;
+    }
+
+    .speaker-row {
+      flex-wrap: wrap;
+    }
+
+    .speaker-select {
+      width: 100%;
     }
   }
 </style>
 <body>
   <div class="app-shell">
-    <h1>VibeVoice-Realtime TTS Demo</h1>
+    <h1>VibeVoice Demo</h1>
 
+    <!-- Model selector -->
     <section class="panel">
-      <label class="field">
+      <div class="inline-field" style="flex-wrap:wrap; gap:10px; align-items:center">
+        <span class="field-label">Model</span>
+        <select id="modelSelect" class="select-control">
+          <option value="0.5b-streaming">VibeVoice Realtime 0.5B (streaming)</option>
+        </select>
+        <span id="modelLoadedBadge" class="model-badge model-badge--loaded" style="display:none">&#10003; loaded</span>
+        <span id="modelLoadingBadge" class="model-badge model-badge--loading" style="display:none">&#8987; loading model&hellip;</span>
+      </div>
+    </section>
+
+    <!-- TTS input (shared by 0.5B and 1.5B/Large) -->
+    <section class="panel" id="ttsInputSection">
+
+      <!-- 0.5B: single textarea -->
+      <label class="field" id="singleTextSection">
         <span class="field-label">Text</span>
         <textarea
           id="prompt"
@@ -330,6 +752,47 @@
         >Enter your text here and click "Start" to instantly hear the VibeVoice-Realtime TTS output audio.</textarea>
       </label>
 
+      <!-- 1.5B / Large: multi-speaker segmented editor -->
+      <div id="multiSpeakerEditor" style="display:none">
+        <div class="field">
+          <span class="field-label">
+            Script
+            <span class="tip"><span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Each row is one speaker turn. Choose the speaker number and type that speaker's text. The model supports up to 4 distinct speakers (0–3) in one generation.<br><br>Use <strong>... , —</strong> for natural pauses (handled by the model). Use the <strong>[pause:Xs]</strong> buttons below for precise timed silences.</span>
+            </span>
+          </span>
+          <div class="speaker-editor" id="speakerRows">
+            <!-- rows injected by JS -->
+          </div>
+          <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap; align-items:center">
+            <button type="button" id="addSpeakerTurnBtn" class="secondary-btn" style="font-size:13px; padding:6px 14px">+ Add Speaker Turn</button>
+            <span class="helper-text" style="font-size:11px">Tip: type <code>...</code> or <code>,</code> for natural pauses. Use buttons below for precise gaps.</span>
+          </div>
+        </div>
+
+        <!-- Pause insert row -->
+        <div class="field" style="margin-top:4px">
+          <span class="field-label" style="font-size:13px; font-weight:500">
+            Insert Pause at Cursor
+            <span class="tip"><span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Inserts a timed silence at your cursor position in the focused speaker text. The text is split at each [pause:Xs] marker: each segment is generated separately and silence is stitched between them.<br><br>Natural pauses from punctuation (<code>...</code>, <code>,</code>, <code>—</code>) still work on top of this.</span>
+            </span>
+          </span>
+          <div class="pause-btn-row">
+            <span style="font-size:12px; color:var(--text-muted)">Quick:</span>
+            <button type="button" class="pause-btn" data-pause="0.3s">[pause:0.3s]</button>
+            <button type="button" class="pause-btn" data-pause="0.5s">[pause:0.5s]</button>
+            <button type="button" class="pause-btn" data-pause="1s">[pause:1s]</button>
+            <button type="button" class="pause-btn" data-pause="2s">[pause:2s]</button>
+            <span style="font-size:12px; color:var(--text-muted); margin-left:6px">Custom (sec):</span>
+            <input type="number" id="customPauseSec" min="0.1" max="10" step="0.1" value="0.5"
+              style="width:62px; border:1px solid rgba(31,39,66,0.18); border-radius:6px; padding:3px 6px; font-size:12px">
+            <button type="button" id="insertCustomPauseBtn" class="pause-btn">[pause:custom]</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Streaming preview (0.5B only) -->
       <div id="streamingPreviewContainer">
         <div id="streamingPreviewHeader">
           <span>Streaming Input Text</span>
@@ -337,44 +800,190 @@
         <div id="streamingPreview" aria-live="polite">This area will display the streaming input text in real time.</div>
       </div>
     </section>
-          <span class="helper-text">This demo requires the full text to be provided upfront. The model then receives the text via streaming input during synthesis.<br>
-            For non-punctuation special characters, applying text normalization before processing often yields better results.</span>
-          
+    <span class="helper-text" id="helperText0p5b">This demo requires the full text to be provided upfront. The model then receives the text via streaming input during synthesis.<br>
+      For non-punctuation special characters, applying text normalization before processing often yields better results.</span>
+
+    <!-- TTS Controls -->
     <section class="panel control-panel">
-      <div class="inline-field">
+
+      <!-- 0.5B speaker selector -->
+      <div class="inline-field" id="speakerSection">
         <span class="field-label">Speaker</span>
         <select id="voiceSelect" class="select-control">
           <option value="">Loading...</option>
         </select>
       </div>
 
-      <div class="control-row">
-        <label class="range-control">
-          <span>CFG</span>
-          <input id="cfgScale" type="range" min="1.3" max="3" step="0.05" value="1.5" />
-          <span class="range-value" id="cfgValue">1.5</span>
-        </label>
-        <label class="range-control">
-          <span>Inference Steps</span>
-          <input id="inferenceSteps" type="range" min="5" max="20" step="1" value="5" />
-          <span class="range-value" id="stepsValue">5</span>
-        </label>
-        <button id="resetControls" type="button" class="secondary-btn">Reset Controls</button>
+      <!-- 1.5B / Large voice reference upload (per-speaker) -->
+      <div class="inline-field" id="voiceCloneSection" style="display:none">
+        <span class="field-label">
+          Voice References
+          <span class="tip"><span class="tip-icon">ⓘ</span>
+            <span class="tip-box">Upload 3–30 second WAV or MP3 clips to clone specific voices per speaker. The model matches tone, accent, and speaking style from each reference.<br><br>Speed adjustment is applied to the reference audio before model conditioning — this is pitch-preserving (unlike output resampling). When no reference is provided, speed falls back to output resampling.<br><br>Best results: clean audio, single speaker, no background music.</span>
+          </span>
+        </span>
+        <div id="speakerVoiceUploads" style="display:flex; flex-direction:column; gap:6px; margin-top:4px">
+          <!-- rows injected by JS alongside speaker rows -->
+        </div>
+        <span class="helper-text" style="font-size:11px">Optional — leave blank to use model-default voices. Upload more to enable per-speaker cloning.</span>
       </div>
 
-      <div class="control-row">
-        <button id="playback">Start</button>
-        <button id="saveAudio" type="button" class="secondary-btn" disabled>Save</button>
+      <!-- 0.5B streaming controls (CFG, steps, Start/Save) -->
+      <div id="streamingControls">
+        <div class="control-row">
+          <label class="range-control">
+            <span class="tip">CFG <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Classifier-Free Guidance — controls how closely the model follows your text. Higher = more faithful but can sound over-enunciated. Lower = more natural but may drift.<br><br>Default: 1.5 &nbsp;|&nbsp; Range: 1.3 – 3.0</span>
+            </span>
+            <input id="cfgScale" type="range" min="1.3" max="3" step="0.05" value="1.5" />
+            <span class="range-value" id="cfgValue">1.5</span>
+          </label>
+          <label class="range-control">
+            <span class="tip">Inference Steps <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Diffusion denoising steps for the acoustic head. More steps = slightly cleaner audio, but slower. Does not affect how fast the speaker talks — only audio texture/quality.<br><br>Default: 5 &nbsp;|&nbsp; Range: 5 – 20 &nbsp;|&nbsp; Sweet spot: 10–15</span>
+            </span>
+            <input id="inferenceSteps" type="range" min="5" max="20" step="1" value="5" />
+            <span class="range-value" id="stepsValue">5</span>
+          </label>
+          <button id="resetControls" type="button" class="secondary-btn">Reset Controls</button>
+        </div>
+
+        <div class="control-row">
+          <span class="toggle-row">
+            <label class="toggle-switch">
+              <input type="checkbox" id="doSample" />
+              <span class="toggle-track"></span>
+            </label>
+            <span class="tip">Sampling <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">When off, generation is deterministic (same output every run). When on, the model samples from probability distributions, adding natural variation — useful if the output sounds too robotic.<br><br>Default: off</span>
+            </span>
+          </span>
+        </div>
+
+        <div class="control-row" id="samplingParams" style="display:none">
+          <label class="range-control">
+            <span class="tip">Temperature <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Controls randomness when Sampling is on. Higher = more varied and expressive but less predictable. Lower = more consistent but flatter.<br><br>Default: 0.9 &nbsp;|&nbsp; Range: 0.1 – 2.0</span>
+            </span>
+            <input id="temperature" type="range" min="0.1" max="2.0" step="0.05" value="0.9" />
+            <span class="range-value" id="temperatureValue">0.90</span>
+          </label>
+          <label class="range-control">
+            <span class="tip">Top-P <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Nucleus sampling threshold. Only tokens whose cumulative probability reaches this value are considered. Lower = more focused/conservative. Higher = broader vocabulary of choices.<br><br>Default: 0.9 &nbsp;|&nbsp; Range: 0.1 – 1.0</span>
+            </span>
+            <input id="topP" type="range" min="0.1" max="1.0" step="0.05" value="0.9" />
+            <span class="range-value" id="topPValue">0.90</span>
+          </label>
+        </div>
+
+        <div class="control-row">
+          <button id="playback">Start</button>
+          <button id="saveAudio" type="button" class="secondary-btn" disabled>Save Audio</button>
+        </div>
       </div>
+
+      <!-- 1.5B / Large generate controls -->
+      <div id="cloneControls" style="display:none">
+        <div class="control-row">
+          <label class="range-control">
+            <span class="tip">CFG <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Classifier-Free Guidance — controls how closely the model follows your text. Higher = more expressive and text-faithful. Lower = more natural variation. For voice cloning, higher values (3–4) tend to preserve the cloned voice more strongly.<br><br>Default: 3.0 &nbsp;|&nbsp; Range: 1.0 – 5.0</span>
+            </span>
+            <input id="cfgScale1p5b" type="range" min="1.0" max="5.0" step="0.1" value="3.0" />
+            <span class="range-value" id="cfgValue1p5b">3.0</span>
+          </label>
+          <label class="range-control">
+            <span class="tip">Inference Steps <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Diffusion denoising steps for the acoustic head. More steps = slightly cleaner audio, but slower generation. Does not affect speech rate.<br><br>Default: 20 &nbsp;|&nbsp; Range: 5 – 50 &nbsp;|&nbsp; Sweet spot: 15–30</span>
+            </span>
+            <input id="inferenceSteps1p5b" type="range" min="5" max="50" step="1" value="20" />
+            <span class="range-value" id="stepsValue1p5b">20</span>
+          </label>
+        </div>
+        <div class="control-row" style="margin-top:10px">
+          <label class="range-control">
+            <span class="tip">Speed <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">When a voice reference is uploaded, speed is applied to the reference audio before conditioning — this is <strong>pitch-preserving</strong> (linear interpolation, same technique as VibeVoice-ComfyUI).<br><br>Without a voice reference, falls back to output resampling which shifts pitch slightly.<br><br>Use <code>...</code> or <code>,</code> for natural pacing, or <code>[pause:Xs]</code> for timed gaps.<br><br>Default: 1.0 &nbsp;|&nbsp; Range: 0.75 – 1.25</span>
+            </span>
+            <input id="speed1p5b" type="range" min="0.75" max="1.25" step="0.05" value="1.0" />
+            <span class="range-value" id="speedValue1p5b">1.00×</span>
+          </label>
+          <button id="generate1p5b" type="button" class="btn-primary">Generate</button>
+        </div>
+        <div class="control-row" style="margin-top:10px; flex-wrap:wrap; gap:14px 24px">
+          <label class="inline-field" style="flex-direction:row; align-items:center; gap:8px">
+            <span class="tip" style="font-size:13px; font-weight:500">Seed <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">RNG seed for reproducible generation. Same seed + same inputs = same audio. Set to –1 or leave blank for random output each run.<br><br>Default: random &nbsp;|&nbsp; ComfyUI default: 42</span>
+            </span>
+            <input type="number" id="seed1p5b" min="0" max="4294967295" placeholder="random"
+              style="width:110px; border:1px solid rgba(31,39,66,0.18); border-radius:8px; padding:5px 8px; font-size:13px">
+            <button type="button" id="randomizeSeedBtn" class="secondary-btn" style="padding:5px 10px; font-size:12px" title="Randomize seed">⟳</button>
+          </label>
+          <label class="inline-field" style="flex-direction:row; align-items:center; gap:8px">
+            <span class="tip" style="font-size:13px; font-weight:500">Max words/chunk <span class="tip-icon">ⓘ</span>
+              <span class="tip-box">Long texts are automatically split at sentence boundaries to prevent instability. Each chunk is generated separately and concatenated. Lower = more stable but more generations per request.<br><br>Default: 200 &nbsp;|&nbsp; Range: 50 – 500</span>
+            </span>
+            <input type="number" id="maxWords1p5b" min="50" max="500" step="10" value="200"
+              style="width:72px; border:1px solid rgba(31,39,66,0.18); border-radius:8px; padding:5px 8px; font-size:13px">
+          </label>
+        </div>
+        <div id="genStatus1p5b" style="display:none; margin-top:6px">
+          <span class="gen-status">Generating audio…</span>
+        </div>
+        <div id="audio1p5bContainer" style="display:none; margin-top:12px">
+          <audio id="audio1p5b" controls></audio>
+          <button id="saveAudio1p5b" type="button" class="secondary-btn">Save WAV</button>
+        </div>
+      </div>
+
     </section>
 
-    <section class="panel">
+    <!-- Metrics (0.5B only) -->
+    <section class="panel" id="metricsSection">
       <div class="metrics">
         <span>Model Generated Audio<strong id="modelGenerated">0.00</strong><span class="metric-unit">s</span></span>
         <span>Audio Played<strong id="playbackElapsed">0.00</strong><span class="metric-unit">s</span></span>
       </div>
     </section>
 
+    <!-- Transcript panel (appears after 0.5B stream completes) -->
+    <section class="panel" id="wordTimingPanel" style="display:none">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px">
+        <span class="field-label">Transcript</span>
+        <button id="downloadTimestampsBtn" type="button" class="secondary-btn" style="font-size:12px; padding:4px 12px">Download Timestamps JSON</button>
+      </div>
+      <div id="wordTimingDisplay" class="transcript-display"></div>
+    </section>
+
+    <!-- ASR section -->
+    <section class="panel" id="asrSection" style="display:none">
+      <hr class="section-divider">
+      <span class="field-label" style="font-size:17px">Speech Recognition</span>
+      <div class="field">
+        <span class="field-label" style="font-weight:500">Upload Audio File</span>
+        <input type="file" id="asrFile" accept="audio/*,video/*" class="file-input">
+        <span class="helper-text">Supports audio (WAV, MP3, FLAC) and video (MP4, MKV, WebM)</span>
+      </div>
+      <div class="control-row">
+        <button id="transcribeBtn" type="button" class="btn-primary">Transcribe</button>
+        <div id="asrStatus" style="display:none">
+          <span class="gen-status">Transcribing…</span>
+        </div>
+      </div>
+      <div id="asrResult" style="display:none; margin-top:4px">
+        <div class="field">
+          <span class="field-label">Transcription</span>
+          <pre id="asrText" class="asr-result"></pre>
+        </div>
+        <div id="asrSegmentsSection" style="display:none; margin-top:8px">
+          <span class="field-label" style="font-weight:500; font-size:13px">Segments</span>
+          <div id="asrSegments" class="asr-segments"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Runtime logs -->
     <section class="panel">
       <span class="field-label">Runtime Logs</span>
       <pre id="logOutput"></pre>
@@ -396,6 +1005,10 @@
   let hasStartedPlayback = false;
   let silentFrameCount = 0;
 
+  // New state for multi-model support
+  let currentModel = '0.5b-streaming';
+  let audio1p5bUrl = null;
+
   const promptInput = document.getElementById('prompt');
   const streamingPreview = document.getElementById('streamingPreview');
   const controlBtn = document.getElementById('playback');
@@ -409,6 +1022,75 @@
   const logOutput = document.getElementById('logOutput');
   const resetBtn = document.getElementById('resetControls');
   const saveBtn = document.getElementById('saveAudio');
+
+  // New model UI elements
+  const modelSelect = document.getElementById('modelSelect');
+  const modelLoadedBadge = document.getElementById('modelLoadedBadge');
+  const modelLoadingBadge = document.getElementById('modelLoadingBadge');
+
+  // loaded status per model-id (populated from /config response)
+  const _modelLoadedStatus = {};
+
+  const _updateModelBadge = (modelId, isLoading = false) => {
+    const loaded = _modelLoadedStatus[modelId];
+    if (modelLoadingBadge) modelLoadingBadge.style.display = isLoading ? '' : 'none';
+    if (modelLoadedBadge) {
+      if (isLoading) {
+        modelLoadedBadge.style.display = 'none';
+      } else if (modelId === '0.5b-streaming') {
+        // Streaming model is always loaded
+        modelLoadedBadge.style.display = '';
+        modelLoadedBadge.className = 'model-badge model-badge--loaded';
+        modelLoadedBadge.textContent = '✓ loaded';
+      } else if (loaded === true) {
+        modelLoadedBadge.style.display = '';
+        modelLoadedBadge.className = 'model-badge model-badge--loaded';
+        modelLoadedBadge.textContent = '✓ loaded';
+      } else if (loaded === false) {
+        modelLoadedBadge.style.display = '';
+        modelLoadedBadge.className = 'model-badge model-badge--unloaded';
+        modelLoadedBadge.textContent = 'not loaded';
+      } else {
+        modelLoadedBadge.style.display = 'none';
+      }
+    }
+  };
+  const ttsInputSection = document.getElementById('ttsInputSection');
+  const helperText0p5b = document.getElementById('helperText0p5b');
+  const streamingPreviewContainer = document.getElementById('streamingPreviewContainer');
+  const speakerSection = document.getElementById('speakerSection');
+  const voiceCloneSection = document.getElementById('voiceCloneSection');
+  const streamingControls = document.getElementById('streamingControls');
+  const cloneControls = document.getElementById('cloneControls');
+  const metricsSection = document.getElementById('metricsSection');
+  const wordTimingPanel = document.getElementById('wordTimingPanel');
+  const wordTimingDisplay = document.getElementById('wordTimingDisplay');
+  const asrSection = document.getElementById('asrSection');
+
+  const doSampleToggle = document.getElementById('doSample');
+  const samplingParams = document.getElementById('samplingParams');
+  const temperatureSlider = document.getElementById('temperature');
+  const temperatureValueLabel = document.getElementById('temperatureValue');
+  const topPSlider = document.getElementById('topP');
+  const topPValueLabel = document.getElementById('topPValue');
+
+  const cfgScale1p5b = document.getElementById('cfgScale1p5b');
+  const cfgValue1p5bLabel = document.getElementById('cfgValue1p5b');
+  const steps1p5b = document.getElementById('inferenceSteps1p5b');
+  const stepsValue1p5bLabel = document.getElementById('stepsValue1p5b');
+  const generate1p5bBtn = document.getElementById('generate1p5b');
+  const genStatus1p5b = document.getElementById('genStatus1p5b');
+  const audio1p5bContainer = document.getElementById('audio1p5bContainer');
+  const audio1p5bEl = document.getElementById('audio1p5b');
+  const saveAudio1p5bBtn = document.getElementById('saveAudio1p5b');
+
+  const asrFile = document.getElementById('asrFile');
+  const transcribeBtn = document.getElementById('transcribeBtn');
+  const asrStatus = document.getElementById('asrStatus');
+  const asrResult = document.getElementById('asrResult');
+  const asrText = document.getElementById('asrText');
+  const asrSegmentsSection = document.getElementById('asrSegmentsSection');
+  const asrSegments = document.getElementById('asrSegments');
 
   let playbackTimer = null;
   let lastPlaybackElapsed = 0;
@@ -493,6 +1175,44 @@
   stepsSelect.addEventListener('input', updateStepsDisplay);
   updateCfgDisplay();
   updateStepsDisplay();
+
+  if (cfgScale1p5b) {
+    cfgScale1p5b.addEventListener('input', () => {
+      cfgValue1p5bLabel.textContent = Number(cfgScale1p5b.value).toFixed(1);
+    });
+  }
+
+  if (steps1p5b) {
+    steps1p5b.addEventListener('input', () => {
+      stepsValue1p5bLabel.textContent = steps1p5b.value;
+    });
+  }
+
+  const speed1p5bSlider = document.getElementById('speed1p5b');
+  const speedValue1p5bLabel = document.getElementById('speedValue1p5b');
+  if (speed1p5bSlider) {
+    speed1p5bSlider.addEventListener('input', () => {
+      speedValue1p5bLabel.textContent = Number(speed1p5bSlider.value).toFixed(2) + '×';
+    });
+  }
+
+  if (doSampleToggle) {
+    doSampleToggle.addEventListener('change', () => {
+      samplingParams.style.display = doSampleToggle.checked ? '' : 'none';
+    });
+  }
+
+  if (temperatureSlider) {
+    temperatureSlider.addEventListener('input', () => {
+      temperatureValueLabel.textContent = Number(temperatureSlider.value).toFixed(2);
+    });
+  }
+
+  if (topPSlider) {
+    topPSlider.addEventListener('input', () => {
+      topPValueLabel.textContent = Number(topPSlider.value).toFixed(2);
+    });
+  }
 
   const pad2 = value => value.toString().padStart(2, '0');
   const pad3 = value => value.toString().padStart(3, '0');
@@ -659,6 +1379,450 @@
     }, 250);
   };
 
+  // ---------------------------------------------------------------------------
+  // Model switching
+  // ---------------------------------------------------------------------------
+
+  const switchModel = modelId => {
+    currentModel = modelId;
+    const is0p5b = modelId === '0.5b-streaming';
+    const is1p5b = modelId === '1.5b';
+    const isLarge = modelId === 'large';
+    const is1p5bLike = is1p5b || isLarge;
+    const isASR = modelId === 'asr';
+
+    // TTS text input (hidden for ASR)
+    if (ttsInputSection) ttsInputSection.style.display = isASR ? 'none' : '';
+    if (helperText0p5b) helperText0p5b.style.display = is0p5b ? '' : 'none';
+
+    // 0.5B: single textarea; 1.5B/Large: multi-speaker editor
+    const singleTextSection = document.getElementById('singleTextSection');
+    const multiSpeakerEditor = document.getElementById('multiSpeakerEditor');
+    if (singleTextSection) singleTextSection.style.display = is0p5b ? '' : 'none';
+    if (multiSpeakerEditor) multiSpeakerEditor.style.display = is1p5bLike ? '' : 'none';
+
+    // 0.5B-specific
+    if (streamingPreviewContainer) streamingPreviewContainer.style.display = is0p5b ? '' : 'none';
+    if (speakerSection) speakerSection.style.display = is0p5b ? '' : 'none';
+    if (streamingControls) streamingControls.style.display = is0p5b ? '' : 'none';
+    if (metricsSection) metricsSection.style.display = is0p5b ? '' : 'none';
+
+    // 1.5B / Large-specific
+    if (voiceCloneSection) voiceCloneSection.style.display = is1p5bLike ? '' : 'none';
+    if (cloneControls) cloneControls.style.display = is1p5bLike ? '' : 'none';
+
+    // ASR
+    if (asrSection) asrSection.style.display = isASR ? '' : 'none';
+
+    // Clear transcript when switching away from 0.5B
+    if (!is0p5b) {
+      if (wordTimingPanel) wordTimingPanel.style.display = 'none';
+      if (wordTimingDisplay) wordTimingDisplay.innerHTML = '';
+      _lastWordTimings = null;
+    }
+
+    // Stop any active stream when leaving 0.5B
+    if (!is0p5b && isPlaying) {
+      stop();
+    }
+
+    // Update loaded badge for the selected model
+    _updateModelBadge(modelId, false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Multi-speaker editor
+  // ---------------------------------------------------------------------------
+
+  let _focusedSpeakerTextarea = null;
+
+  const SPEAKER_COLORS = ['#5562ff', '#16a34a', '#d97706', '#dc2626'];
+
+  const syncVoiceUploadRows = () => {
+    const voiceUploads = document.getElementById('speakerVoiceUploads');
+    if (!voiceUploads) return;
+    // Collect current speaker IDs across all rows
+    const speakerIds = new Set();
+    document.querySelectorAll('#speakerRows .speaker-row .speaker-select').forEach(sel => {
+      speakerIds.add(parseInt(sel.value, 10));
+    });
+    // Rebuild upload rows for each unique speaker
+    const sorted = [...speakerIds].sort();
+    const existing = {};
+    voiceUploads.querySelectorAll('[data-speaker-voice]').forEach(el => {
+      const sid = el.dataset.speakerVoice;
+      existing[sid] = el;
+    });
+    // Remove stale rows
+    Object.keys(existing).forEach(sid => {
+      if (!speakerIds.has(parseInt(sid, 10))) existing[sid].remove();
+    });
+    // Add missing rows
+    sorted.forEach(sid => {
+      if (!existing[String(sid)]) {
+        const wrap = document.createElement('label');
+        wrap.className = 'inline-field';
+        wrap.style.cssText = 'flex-direction:row; align-items:center; gap:8px; font-size:13px';
+        wrap.dataset.speakerVoice = String(sid);
+        wrap.innerHTML = `<span style="min-width:80px; font-weight:500; color:var(--text-muted)">Speaker ${sid}:</span>
+          <input type="file" accept="audio/*" data-voice-speaker="${sid}" style="font-size:12px">`;
+        voiceUploads.appendChild(wrap);
+      }
+    });
+    // Sort rows
+    sorted.forEach(sid => {
+      const el = voiceUploads.querySelector(`[data-speaker-voice="${sid}"]`);
+      if (el) voiceUploads.appendChild(el);
+    });
+  };
+
+  const addSpeakerRow = (speakerId = 0, text = '') => {
+    const speakerRows = document.getElementById('speakerRows');
+    if (!speakerRows) return;
+
+    const row = document.createElement('div');
+    row.className = 'speaker-row';
+
+    const labelCol = document.createElement('div');
+    labelCol.className = 'speaker-label-col';
+
+    const select = document.createElement('select');
+    select.className = 'speaker-select';
+    for (let i = 0; i < 4; i++) {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = `Speaker ${i}`;
+      if (i === speakerId) opt.selected = true;
+      select.appendChild(opt);
+    }
+
+    const ta = document.createElement('textarea');
+    ta.className = 'speaker-textarea';
+    ta.placeholder = `Speaker ${speakerId} dialogue…`;
+    ta.value = text;
+    ta.rows = 3;
+    ta.addEventListener('focus', () => { _focusedSpeakerTextarea = ta; });
+
+    select.addEventListener('change', () => {
+      ta.placeholder = `Speaker ${select.value} dialogue…`;
+      syncVoiceUploadRows();
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'speaker-remove-btn';
+    removeBtn.title = 'Remove this speaker turn';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', () => {
+      if (speakerRows.children.length > 1) {
+        row.remove();
+        syncVoiceUploadRows();
+      }
+    });
+
+    labelCol.appendChild(select);
+    row.appendChild(labelCol);
+    row.appendChild(ta);
+    row.appendChild(removeBtn);
+    speakerRows.appendChild(row);
+    syncVoiceUploadRows();
+    ta.focus();
+  };
+
+  const assembleSpeakerText = () => {
+    const rows = document.querySelectorAll('#speakerRows .speaker-row');
+    const parts = [];
+    rows.forEach(row => {
+      const speaker = row.querySelector('.speaker-select')?.value ?? '0';
+      const text = row.querySelector('.speaker-textarea')?.value?.trim() ?? '';
+      if (text) {
+        parts.push(`Speaker ${speaker}: ${text}`);
+      }
+    });
+    return parts.join('\n\n');
+  };
+
+  // Init speaker editor with one row
+  const initSpeakerEditor = () => {
+    const speakerRows = document.getElementById('speakerRows');
+    if (speakerRows && speakerRows.children.length === 0) {
+      addSpeakerRow(0, '');
+    }
+  };
+
+  // Pause insertion
+  const insertPauseAtCursor = (pauseStr) => {
+    const ta = _focusedSpeakerTextarea;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const val = ta.value;
+    ta.value = val.slice(0, start) + pauseStr + val.slice(end);
+    const newPos = start + pauseStr.length;
+    ta.setSelectionRange(newPos, newPos);
+    ta.focus();
+  };
+
+  // Wire pause buttons
+  document.querySelectorAll('.pause-btn[data-pause]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      insertPauseAtCursor(`[pause:${btn.dataset.pause}]`);
+    });
+  });
+
+  const insertCustomPauseBtn = document.getElementById('insertCustomPauseBtn');
+  if (insertCustomPauseBtn) {
+    insertCustomPauseBtn.addEventListener('click', () => {
+      const sec = parseFloat(document.getElementById('customPauseSec')?.value || '0.5');
+      const val = Number.isFinite(sec) && sec > 0 ? sec : 0.5;
+      insertPauseAtCursor(`[pause:${val}s]`);
+    });
+  }
+
+  const addSpeakerTurnBtn = document.getElementById('addSpeakerTurnBtn');
+  if (addSpeakerTurnBtn) {
+    addSpeakerTurnBtn.addEventListener('click', () => {
+      // Default next speaker = (last speaker + 1) % 4
+      const rows = document.querySelectorAll('#speakerRows .speaker-row');
+      let nextSpeaker = 0;
+      if (rows.length > 0) {
+        const lastSelect = rows[rows.length - 1].querySelector('.speaker-select');
+        nextSpeaker = ((parseInt(lastSelect?.value ?? '0', 10) + 1) % 4);
+      }
+      addSpeakerRow(nextSpeaker, '');
+    });
+  }
+
+  const randomizeSeedBtn = document.getElementById('randomizeSeedBtn');
+  if (randomizeSeedBtn) {
+    randomizeSeedBtn.addEventListener('click', () => {
+      const seedInput = document.getElementById('seed1p5b');
+      if (seedInput) {
+        seedInput.value = Math.floor(Math.random() * 2 ** 32);
+      }
+    });
+  }
+
+  // Initialize on load
+  initSpeakerEditor();
+  syncVoiceUploadRows();
+
+  // ---------------------------------------------------------------------------
+  // 1.5B / Large generate
+  // ---------------------------------------------------------------------------
+
+  const generate1p5b = async () => {
+    // Assemble text from multi-speaker editor
+    const text = assembleSpeakerText();
+    if (!text) {
+      appendLog('[Generate] Text is empty');
+      return;
+    }
+
+    const modelLabel = currentModel === 'large' ? 'Large' : '1.5B';
+    generate1p5bBtn.disabled = true;
+    genStatus1p5b.style.display = '';
+    audio1p5bContainer.style.display = 'none';
+    // Show loading badge (model may need to hot-swap into VRAM)
+    _updateModelBadge(currentModel, !(_modelLoadedStatus[currentModel]));
+    appendLog(`[${modelLabel}] Sending generate request…`);
+
+    try {
+      const formData = new FormData();
+      formData.append('text', text);
+      formData.append('cfg_scale', cfgScale1p5b.value);
+      formData.append('model_id', currentModel);
+      if (steps1p5b?.value) formData.append('steps', steps1p5b.value);
+
+      const speedSlider = document.getElementById('speed1p5b');
+      if (speedSlider) formData.append('speed', speedSlider.value);
+
+      const seedInput = document.getElementById('seed1p5b');
+      const seedVal = seedInput?.value?.trim();
+      if (seedVal && seedVal !== '' && parseInt(seedVal, 10) >= 0) {
+        formData.append('seed', seedVal);
+      }
+
+      const maxWordsInput = document.getElementById('maxWords1p5b');
+      if (maxWordsInput?.value) formData.append('max_words', maxWordsInput.value);
+
+      // Per-speaker voice files
+      const voiceInputs = document.querySelectorAll('[data-voice-speaker]');
+      let voiceCount = 0;
+      voiceInputs.forEach(input => {
+        const sid = input.dataset.voiceSpeaker;
+        if (input.files?.length > 0) {
+          formData.append(`voice_${sid}`, input.files[0]);
+          voiceCount++;
+        }
+      });
+      if (voiceCount > 0) {
+        appendLog(`[${modelLabel}] Voice cloning: ${voiceCount} speaker reference(s)`);
+      }
+
+      const response = await fetch('/generate', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errText}`);
+      }
+
+      const wavBlob = await response.blob();
+      if (audio1p5bUrl) {
+        URL.revokeObjectURL(audio1p5bUrl);
+      }
+      audio1p5bUrl = URL.createObjectURL(wavBlob);
+      audio1p5bEl.src = audio1p5bUrl;
+      audio1p5bContainer.style.display = '';
+      _modelLoadedStatus[currentModel] = true;
+      _updateModelBadge(currentModel, false);
+      appendLog(`[${modelLabel}] Audio generated — ready to play`);
+    } catch (err) {
+      const msg = err.message || String(err);
+      appendLog(`[Error] Generate failed: ${msg}`);
+      genStatus1p5b.innerHTML = `<span style="color:#c0392b">Error: ${msg}</span>`;
+      genStatus1p5b.style.display = '';
+      _updateModelBadge(currentModel, false);
+      generate1p5bBtn.disabled = false;
+      return;
+    }
+    generate1p5bBtn.disabled = false;
+    genStatus1p5b.style.display = 'none';
+    genStatus1p5b.innerHTML = '<span class="gen-status">Generating audio…</span>';
+  };
+
+  // ---------------------------------------------------------------------------
+  // ASR transcribe
+  // ---------------------------------------------------------------------------
+
+  const transcribeASR = async () => {
+    if (!asrFile?.files?.length) {
+      appendLog('[ASR] No audio file selected');
+      return;
+    }
+
+    transcribeBtn.disabled = true;
+    asrStatus.style.display = '';
+    asrResult.style.display = 'none';
+    _updateModelBadge('asr', !(_modelLoadedStatus['asr']));
+    appendLog(`[ASR] Transcribing ${asrFile.files[0].name}…`);
+
+    try {
+      const formData = new FormData();
+      formData.append('audio', asrFile.files[0]);
+
+      const response = await fetch('/transcribe', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errText}`);
+      }
+
+      const result = await response.json();
+      asrText.textContent = result.text || '(no transcription)';
+
+      // Render segments if present
+      if (Array.isArray(result.segments) && result.segments.length > 0) {
+        asrSegments.innerHTML = '';
+        result.segments.forEach(seg => {
+          const row = document.createElement('div');
+          row.className = 'asr-segment';
+          const start = seg.start_time != null ? Number(seg.start_time).toFixed(2) : '?';
+          const end = seg.end_time != null ? Number(seg.end_time).toFixed(2) : '?';
+          const speaker = seg.speaker_id != null ? ` [spk ${seg.speaker_id}]` : '';
+          const timeEl = document.createElement('span');
+          timeEl.className = 'asr-segment-time';
+          timeEl.textContent = `${start}s – ${end}s${speaker}`;
+          const textEl = document.createElement('span');
+          textEl.textContent = seg.text || '';
+          row.appendChild(timeEl);
+          row.appendChild(textEl);
+          asrSegments.appendChild(row);
+        });
+        asrSegmentsSection.style.display = '';
+      } else {
+        asrSegmentsSection.style.display = 'none';
+      }
+
+      asrResult.style.display = '';
+      _modelLoadedStatus['asr'] = true;
+      _updateModelBadge('asr', false);
+      appendLog(`[ASR] Transcription complete`);
+    } catch (err) {
+      const msg = err.message || String(err);
+      appendLog(`[Error] ASR failed: ${msg}`);
+      asrStatus.innerHTML = `<span style="color:#c0392b">Error: ${msg}</span>`;
+      asrStatus.style.display = '';
+      _updateModelBadge('asr', false);
+      transcribeBtn.disabled = false;
+      return;
+    }
+    transcribeBtn.disabled = false;
+    asrStatus.style.display = 'none';
+    asrStatus.innerHTML = '<span class="gen-status">Transcribing…</span>';
+  };
+
+  // ---------------------------------------------------------------------------
+  // Transcript display (SRT-style lines) + JSON download
+  // ---------------------------------------------------------------------------
+
+  let _lastWordTimings = null;
+
+  const formatTs = t => {
+    if (typeof t !== 'number') return '?';
+    const m = Math.floor(t / 60);
+    const s = (t % 60).toFixed(2).padStart(5, '0');
+    return `${m}:${s}`;
+  };
+
+  const displayWordTimings = words => {
+    if (!words || words.length === 0) return;
+    _lastWordTimings = words;
+    wordTimingDisplay.innerHTML = '';
+
+    // Group words into lines of ~8 words each
+    const LINE_SIZE = 8;
+    for (let i = 0; i < words.length; i += LINE_SIZE) {
+      const group = words.slice(i, i + LINE_SIZE);
+      const start = group[0].start_time;
+      const end = group[group.length - 1].end_time;
+      const text = group.map(w => w.word || '').join(' ');
+
+      const row = document.createElement('div');
+      row.className = 'transcript-line';
+
+      const timeEl = document.createElement('span');
+      timeEl.className = 'transcript-time';
+      timeEl.textContent = `${formatTs(start)} → ${formatTs(end)}`;
+
+      const textEl = document.createElement('span');
+      textEl.className = 'transcript-text';
+      textEl.textContent = text;
+
+      row.appendChild(timeEl);
+      row.appendChild(textEl);
+      wordTimingDisplay.appendChild(row);
+    }
+
+    wordTimingPanel.style.display = '';
+  };
+
+  const downloadTimestampsBtn = document.getElementById('downloadTimestampsBtn');
+  if (downloadTimestampsBtn) {
+    downloadTimestampsBtn.addEventListener('click', () => {
+      if (!_lastWordTimings) return;
+      const blob = new Blob([JSON.stringify(_lastWordTimings, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'word_timestamps.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // loadVoices — fetches /config and populates voice + model selects
+  // ---------------------------------------------------------------------------
+
   const loadVoices = async () => {
     try {
       voiceSelect.disabled = true;
@@ -667,6 +1831,30 @@
         throw new Error(`Failed to fetch config: ${response.status}`);
       }
       const data = await response.json();
+
+      // Populate model selector
+      if (modelSelect && Array.isArray(data.models)) {
+        const prevVal = modelSelect.value;
+        modelSelect.innerHTML = '';
+        data.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          // Annotate name with loaded state for heavy models
+          const loadTag = (m.id !== '0.5b-streaming')
+            ? (m.loaded ? ' ✓' : ' (not loaded)')
+            : '';
+          opt.textContent = m.name + loadTag;
+          _modelLoadedStatus[m.id] = (m.loaded !== false);
+          modelSelect.appendChild(opt);
+        });
+        // Restore previous selection if still available
+        if (prevVal && [...modelSelect.options].some(o => o.value === prevVal)) {
+          modelSelect.value = prevVal;
+        }
+        switchModel(modelSelect.value);
+      }
+
+      // Populate voice presets (0.5B)
       const voices = Array.isArray(data.voices) ? data.voices : [];
       voiceSelect.innerHTML = '';
       if (voices.length === 0) {
@@ -705,12 +1893,23 @@
 
   loadVoices();
 
+  // ---------------------------------------------------------------------------
+  // Event wiring
+  // ---------------------------------------------------------------------------
+
+  if (modelSelect) {
+    modelSelect.addEventListener('change', () => switchModel(modelSelect.value));
+  }
+
   resetBtn.addEventListener('click', () => {
     cfgSelect.value = '1.5';
     stepsSelect.value = '5';
+    if (doSampleToggle) { doSampleToggle.checked = false; samplingParams.style.display = 'none'; }
+    if (temperatureSlider) { temperatureSlider.value = '0.9'; temperatureValueLabel.textContent = '0.90'; }
+    if (topPSlider) { topPSlider.value = '0.9'; topPValueLabel.textContent = '0.90'; }
     updateCfgDisplay();
     updateStepsDisplay();
-    appendLog('[Frontend] Controls reset to defaults (CFG=1.5, Steps=5)');
+    appendLog('[Frontend] Controls reset to defaults');
   });
 
   if (promptInput) {
@@ -720,6 +1919,32 @@
       }
     });
   }
+
+  if (generate1p5bBtn) {
+    generate1p5bBtn.addEventListener('click', generate1p5b);
+  }
+
+  if (saveAudio1p5bBtn) {
+    saveAudio1p5bBtn.addEventListener('click', () => {
+      if (!audio1p5bUrl) return;
+      const link = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = audio1p5bUrl;
+      link.download = `vibevoice_${currentModel}_${ts}.wav`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      appendLog('[Frontend] 1.5B audio download triggered');
+    });
+  }
+
+  if (transcribeBtn) {
+    transcribeBtn.addEventListener('click', transcribeASR);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Log message handler (WebSocket text frames)
+  // ---------------------------------------------------------------------------
 
   const handleLogMessage = raw => {
     let payload;
@@ -737,10 +1962,6 @@
     const { event, data = {}, timestamp } = payload;
     switch (event) {
       case 'backend_request_received': {
-        const cfg = typeof data.cfg_scale === 'number' ? data.cfg_scale.toFixed(3) : data.cfg_scale;
-        const steps = data.inference_steps ?? 'default';
-        const voice = data.voice || 'default';
-        const textLength = data.text_length ?? 0;
         appendLog(`[Backend]  Received request`, timestamp);
         break;
       }
@@ -755,6 +1976,14 @@
           }
         }
         return;
+      case 'word_timing': {
+        const words = data.words || [];
+        if (words.length > 0) {
+          displayWordTimings(words);
+          appendLog(`[Backend]  Word timestamps: ${words.length} words`, timestamp);
+        }
+        break;
+      }
       case 'generation_error':
         appendLog(`[Error] Generation error: ${data.message || 'Unknown error'}`, timestamp);
         break;
@@ -774,6 +2003,10 @@
         break;
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // 0.5B streaming playback
+  // ---------------------------------------------------------------------------
 
   const updateButtonLabel = () => {
     controlBtn.textContent = isPlaying ? 'Stop' : 'Start';
@@ -904,6 +2137,11 @@
     const voiceValue = voiceSelect.value || '';
 
     clearLogs();
+    // Clear previous transcript
+    if (wordTimingDisplay) wordTimingDisplay.innerHTML = '';
+    if (wordTimingPanel) wordTimingPanel.style.display = 'none';
+    _lastWordTimings = null;
+
     const cfgDisplay = Number.isFinite(cfgValue) ? cfgValue.toFixed(3) : 'default';
     const stepsDisplay = Number.isFinite(stepsValue) ? stepsValue : 'default';
     appendLog(`[Frontend] Start button clicked, CFG=${cfgDisplay}, Steps=${stepsDisplay}, Speaker=${voiceValue || 'default'}`);
@@ -928,6 +2166,12 @@
     }
     if (voiceValue) {
       params.set('voice', voiceValue);
+    }
+    const doSample = doSampleToggle?.checked || false;
+    params.set('do_sample', doSample ? 'true' : 'false');
+    if (doSample) {
+      params.set('temperature', Number(temperatureSlider?.value || 0.9).toFixed(2));
+      params.set('top_p', Number(topPSlider?.value || 0.9).toFixed(2));
     }
     const wsUrl = `${location.origin.replace(/^http/, 'ws')}/stream?${params.toString()}`;
 
@@ -1010,6 +2254,7 @@
     resetState();
     clearPreviewTimer();
     revokeDownloadUrl();
+    if (audio1p5bUrl) URL.revokeObjectURL(audio1p5bUrl);
   });
 })();
 </script>

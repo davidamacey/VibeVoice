@@ -38,13 +38,23 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY --from=flash-builder /tmp/wheels/*.whl /tmp/wheels/
 RUN pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
-# Install project
+# ── Dependency layer (only rebuilds when pyproject.toml changes) ──────────────
+# Copy only the manifest, then create minimal package stubs so that
+# `pip install -e .` can discover and register the packages without needing the
+# full source tree.  The real source is copied in the next layer (or mounted via
+# docker-compose volumes at runtime), so source-file edits never invalidate this
+# expensive layer.
 COPY pyproject.toml .
+RUN mkdir -p vibevoice vllm_plugin && \
+    touch vibevoice/__init__.py vllm_plugin/__init__.py
+RUN pip install --no-cache-dir torchaudio --index-url https://download.pytorch.org/whl/cu128 && \
+    pip install --no-cache-dir -e ".[streamingtts]" pytest "speechbrain>=1.0.0"
+
+# ── Source layer (rebuilds on source changes, but pip install is already cached) ─
 COPY vibevoice/ vibevoice/
 COPY vllm_plugin/ vllm_plugin/
 COPY demo/ demo/
 COPY tests/ tests/
-RUN pip install --no-cache-dir -e ".[streamingtts]" pytest
 
 # NVIDIA container runtime mounts GPU drivers at runtime
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -52,6 +62,4 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 EXPOSE 8000
 
-CMD ["python", "demo/realtime_model_inference_from_file.py", \
-     "--model_path", "microsoft/VibeVoice-Realtime-0.5B", \
-     "--timestamps", "--output_dir", "/app/outputs"]
+CMD ["python", "-m", "uvicorn", "demo.web.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -179,6 +179,7 @@ experimental_voices
 # Local reference repos and test outputs (not for public fork)
 ref_repos/
 test_outputs/
+test_outputs_docker/
 
 # Local model cache
 models/

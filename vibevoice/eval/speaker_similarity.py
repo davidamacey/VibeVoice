@@ -32,7 +32,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_SPEECHBRAIN_MODEL_DIR = "/tmp/speechbrain_models"
+import os
+_SPEECHBRAIN_MODEL_DIR = os.environ.get("ECAPA_MODEL_DIR", "/tmp/speechbrain_models")
 _ECAPA_HF_ID = "speechbrain/spkrec-ecapa-voxceleb"
 _ECAPA_SR = 16_000        # speechbrain model expects 16 kHz
 _VIBEVOICE_SR = 24_000    # VibeVoice model output sample rate
@@ -112,7 +113,16 @@ class SpeakerSimilarity:
 
     def _load_ecapa(self) -> None:
         try:
-            from speechbrain.pretrained import EncoderClassifier
+            # speechbrain <= 1.0.3 still calls torchaudio.list_audio_backends() which
+            # was removed in torchaudio 2.0.  Patch it back in if missing.
+            import torchaudio
+            if not hasattr(torchaudio, "list_audio_backends"):
+                torchaudio.list_audio_backends = lambda: []
+
+            try:
+                from speechbrain.inference.classifiers import EncoderClassifier  # speechbrain >= 1.0
+            except ImportError:
+                from speechbrain.pretrained import EncoderClassifier  # speechbrain 0.5.x
             self._ecapa = EncoderClassifier.from_hparams(
                 source=_ECAPA_HF_ID,
                 run_opts={"device": self.device},

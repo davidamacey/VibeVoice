@@ -1,0 +1,32 @@
+services:
+  vibevoice:
+    build: .
+    image: vibevoice-timestamps
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - MODEL_PATH=/models/vibevoice/VibeVoice-Realtime-0.5B
+      - MODEL_PATH_1P5B=/models/vibevoice/VibeVoice-1.5B
+      - MODEL_PATH_LARGE=/models/vibevoice/VibeVoice-Large
+      - MODEL_PATH_ASR=/models/vibevoice/VibeVoice-ASR
+      - TOKENIZER_PATH=/models/Qwen/Qwen2.5-7B
+      - ECAPA_MODEL_DIR=/models/speechbrain/spkrec-ecapa-voxceleb
+      - MODEL_DEVICE=cuda
+    volumes:
+      - /mnt/nas/models:/models
+      - ./outputs:/app/outputs
+      - ./demo:/app/demo
+      - ./vibevoice:/app/vibevoice
+      - ./tests:/app/tests
+    ports:
+      - "8000:8000"
+    command: >
+      python -m uvicorn demo.web.app:app
+      --host 0.0.0.0 --port 8000 --reload
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]

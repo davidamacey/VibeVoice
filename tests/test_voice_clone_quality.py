@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 import torch
 
-NAS_MODEL_PATH = "/mnt/nas/models/vibevoice/VibeVoice-1.5B"
+NAS_MODEL_PATH = os.environ.get("MODEL_PATH_1P5B", "/mnt/nas/models/vibevoice/VibeVoice-1.5B")
 NAS_AVAILABLE = os.path.isdir(NAS_MODEL_PATH)
 nas_only = pytest.mark.skipif(not NAS_AVAILABLE, reason="NAS model not mounted")
 
