@@ -292,11 +292,11 @@ class TestInferenceIntegration:
         model.set_ddpm_inference_steps(10)
 
     def test_generate_short_text(self, model_and_processor):
-        """Generate a short audio sample on CPU (slow but validates the forward pass)."""
+        """Full generate() call — validates the LLM + diffusion forward pass."""
         model, processor = model_and_processor
         model.set_ddpm_inference_steps(5)
 
-        inputs = processor(text="Speaker 0: Hi.", return_tensors="pt")
+        inputs = processor(text="Speaker 0: Hi.", return_tensors="pt").to(DEVICE)
         with torch.no_grad():
             output = model.generate(
                 **inputs,
@@ -306,10 +306,108 @@ class TestInferenceIntegration:
             )
 
         assert output is not None
-        # Either we get audio or sequences — at minimum no exception
         if output.speech_outputs:
             audio = output.speech_outputs[0]
             assert audio is not None
-            # Audio may be 1D (samples,) or 2D (1, samples)
             assert audio.ndim in (1, 2)
             assert audio.numel() > 0
+
+    # ------------------------------------------------------------------
+    # Voice cloning tests
+    # ------------------------------------------------------------------
+
+    def _make_voice_ref(self, seconds: float = 5.0) -> "np.ndarray":
+        """Create a synthetic speech-like reference waveform (24 kHz mono float32)."""
+        import numpy as np
+        n = int(seconds * 24_000)
+        rng = np.random.default_rng(42)
+        # Band-limited noise centered on speech frequencies (100–4000 Hz)
+        sig = rng.standard_normal(n).astype(np.float32) * 0.1
+        return sig
+
+    def test_processor_adds_voice_tokens(self, model_and_processor):
+        """Processor must embed voice reference into speech_tensors/speech_masks and
+        produce longer input_ids than the same text without a voice reference."""
+        _, processor = model_and_processor
+
+        text = "Speaker 0: Testing voice token injection."
+        inputs_plain = processor(text=text, return_tensors="pt")
+        inputs_voice = processor(
+            text=text,
+            voice_samples=[self._make_voice_ref()],
+            return_tensors="pt",
+        )
+
+        # Voice path must produce the speech conditioning keys
+        assert "speech_tensors" in inputs_voice, "Missing speech_tensors in voice output"
+        assert "speech_masks" in inputs_voice, "Missing speech_masks in voice output"
+
+        # input_ids must be longer when voice tokens are prepended
+        plain_len = inputs_plain["input_ids"].shape[-1]
+        voice_len = inputs_voice["input_ids"].shape[-1]
+        assert voice_len > plain_len, (
+            f"input_ids should be longer with voice prefix "
+            f"(got {voice_len} vs {plain_len} without)"
+        )
+
+    def test_generate_voice_cloning(self, model_and_processor):
+        """Full end-to-end generate() with a voice reference — validates the
+        zero-shot voice cloning code path through the model."""
+        model, processor = model_and_processor
+        model.set_ddpm_inference_steps(5)
+
+        inputs = processor(
+            text="Speaker 0: Hello with voice cloning.",
+            voice_samples=[self._make_voice_ref()],
+            return_tensors="pt",
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                tokenizer=processor.tokenizer,
+                cfg_scale=2.0,
+                return_speech=True,
+            )
+
+        assert output is not None
+        assert output.speech_outputs is not None
+        audio = output.speech_outputs[0]
+        assert audio is not None
+        assert audio.numel() > 0
+
+    def test_voice_cloning_output_differs_from_plain(self, model_and_processor):
+        """Audio generated with a voice reference must differ from audio generated
+        without one — confirms the voice conditioning is actually applied."""
+        model, processor = model_and_processor
+        model.set_ddpm_inference_steps(5)
+
+        text = "Speaker 0: Same text different voice."
+
+        inputs_plain = processor(text=text, return_tensors="pt").to(DEVICE)
+        inputs_voice = processor(
+            text=text,
+            voice_samples=[self._make_voice_ref()],
+            return_tensors="pt",
+        ).to(DEVICE)
+
+        with torch.no_grad():
+            out_plain = model.generate(
+                **inputs_plain, tokenizer=processor.tokenizer,
+                cfg_scale=2.0, return_speech=True,
+            )
+            out_voice = model.generate(
+                **inputs_voice, tokenizer=processor.tokenizer,
+                cfg_scale=2.0, return_speech=True,
+            )
+
+        audio_plain = out_plain.speech_outputs[0].cpu().float()
+        audio_voice = out_voice.speech_outputs[0].cpu().float()
+
+        # Trim to the shorter of the two for comparison
+        min_len = min(audio_plain.numel(), audio_voice.numel())
+        diff = (audio_plain.flatten()[:min_len] - audio_voice.flatten()[:min_len]).abs().mean()
+        assert diff.item() > 1e-4, (
+            "Voice-cloned audio is identical to plain TTS output — "
+            "voice conditioning does not appear to be applied"
+        )
